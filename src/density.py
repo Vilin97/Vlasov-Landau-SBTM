@@ -3,6 +3,7 @@ from jax.scipy.stats import multivariate_normal
 import jax.random as jrandom
 import jax.numpy as jnp
 from flax import nnx
+from src.rejection_sample import rejection_sample
 
 @nnx.jit(static_argnames='log_density')
 def score_log_density(log_density, x, v):
@@ -17,9 +18,11 @@ class Density:
         log_density = jnp.log(jnp.clip(self.density(x, v), a_min=1e-10))
         return log_density
     
-    def __call__(self, x, v):
-        """Alias for the density method."""
-        return self.density(x, v)
+    def __call__(self, X, V):
+        """
+        Compute the density for batched inputs X and V.
+        """
+        return vmap(self.density)(X, V)
 
     def score(self, x, v):
         """Compute the score (gradient of log_density with respect to v)."""
@@ -34,36 +37,52 @@ class Density:
         raise NotImplementedError("Subclasses must implement the sample method.")
 
 class CosineNormal(Density):
-    def __init__(self, alpha=0.01, k=0.5):
+    def __init__(self, alpha=0.1, k=0.5, dx=1, dv=2):
         """
+        f(x,v) = (1 + α cos(kx)) * N(v|0,I)
+
         alpha: Perturbation strength, typically small (default: 0.1)
         k: Wave number (default: 0.5)
+        dx: Dimension of spatial coordinates (must be 1)
+        dv: Dimension of velocity coordinates
         """
         super().__init__()
         self.alpha = alpha
         self.k = k
+        self.dx = dx
+        self.dv = dv
+        
+        if dx != 1:
+            raise NotImplementedError("Only 1D spatial dimension is supported")
+            
         domain_x = jnp.array([0, 2 * jnp.pi/k])
         self.domain_x = domain_x
         self.domain_size_x = domain_x[1] - domain_x[0]
         
-    def log_density(self, x, v):
-        """
-        Compute log of f₀(x,v) = log[(1 + α cos(kx))/(2π) * exp(-|v|²/2)]
-        = log(1 + α cos(kx)) - log(2π) - |v|²/2
-        """
-        spatial_part = jnp.log(jnp.clip(1 + self.alpha * jnp.cos(self.k * x), a_min=1e-10))
-        velocity_part = -jnp.sum(v**2, axis=-1) / 2
-        log_2pi = jnp.log(2 * jnp.pi)
+        # Zero mean and identity covariance for velocity distribution
+        self.mean = jnp.zeros(dv)
+        self.cov = jnp.eye(dv)
         
-        return spatial_part - log_2pi + velocity_part
+    def log_density(self, x, v):
+        spatial_part = jnp.log(jnp.clip(1 + self.alpha * jnp.cos(self.k * x), a_min=1e-10))
+        velocity_part = multivariate_normal.logpdf(v, self.mean, self.cov)
+        
+        return (spatial_part + velocity_part)[0]
     
     def density(self, x, v):
+        return jnp.exp(self.log_density(x, v))
+    
+    def density_x(self, x):
         """
-        f₀(x,v) = (1 + α cos(kx))/(2π) * exp(-|v|²/2)
+        Spatial part of the density function: (1 + α cos(kx)) / self.domain_size_x
         """
-        spatial_part = (1 + self.alpha * jnp.cos(self.k * x)) / (2 * jnp.pi)
-        velocity_part = jnp.exp(-jnp.sum(v**2, axis=-1) / 2)
-        return spatial_part * velocity_part
+        return (1 + self.alpha * jnp.cos(self.k * x)) / self.domain_size_x
+    
+    def density_v(self, v):
+        """
+        Velocity part of the density function: N(v | 0, I)
+        """
+        return multivariate_normal.pdf(v, self.mean, self.cov)
     
     def sample(self, key, size=1):
         """
@@ -71,18 +90,21 @@ class CosineNormal(Density):
         """
         key_x, key_v = jrandom.split(key)
         
-        # Sample velocity directly from normal distribution
-        v_samples = jrandom.normal(key_v, shape=(size, 1))
-        
-        # Maximum value of spatial density for rejection sampling
-        max_density = (1 + self.alpha) / (2 * jnp.pi)
+        # Sample velocity directly from multivariate normal distribution
+        v_samples = jrandom.multivariate_normal(key_v, self.mean, self.cov, shape=(size,))
         
         # Define the spatial density function
         def spatial_density(x):
             return (1 + self.alpha * jnp.cos(self.k * x)) / (2 * jnp.pi)
         
-        # Generate all samples
-        x_keys = jrandom.split(key_x, size)
-        x_samples = vmap(lambda k: rejection_sample(k, spatial_density, self.domain_x, max_density))(x_keys)
+        # Generate samples using rejection sampling
+        x_samples = rejection_sample(
+            key_x, 
+            spatial_density, 
+            self.domain_x, 
+            num_samples=size
+        )
+        
+        x_samples = x_samples.reshape(size, self.dx)
         
         return x_samples, v_samples
