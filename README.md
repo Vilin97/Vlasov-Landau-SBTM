@@ -13,7 +13,7 @@ We solve the Vlasov-Landau equations using a neural network-based method called 
 
 2. Activate the environment:
    ```bash
-   conda activate vlasov-landau
+   conda activate vlsbtm
    ```
 
 3. Install the package in development mode:
