@@ -74,26 +74,10 @@ class ResNetBlock(nn.Module):
     
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        """Apply ResNet block to inputs.
-        
-        Args:
-            x: Input features of shape (..., dim)
-            
-        Returns:
-            Transformed features of shape (..., dim)
-        """
-        residual = x
-        
-        # First layer
-        y = nn.Dense(features=self.dim)(x)
-        y = self.activation(y)
-        
-        # Second layer
-        y = nn.Dense(features=self.dim)(y)
-        
-        # Add residual connection
-        return self.activation(y + residual)
-
+        y = self.activation(nn.Dense(features=self.dim)(x))
+        if x.shape[-1] == self.dim:
+            return x + y
+        return x + nn.Dense(features=x.shape[-1])(y)
 
 class ResNetScoreModel(nn.Module):
     """ResNet-based implementation of a score model."""
@@ -128,14 +112,8 @@ class ResNetScoreModel(nn.Module):
         
         # Apply ResNet blocks for each hidden dimension
         for i, dim in enumerate(self.hidden_dims):
-            # Apply multiple ResNet blocks for the current dimension
             for _ in range(self.num_blocks):
                 h = ResNetBlock(dim=dim, activation=self.activation)(h)
-            
-            # Project to next hidden dimension if not the last one
-            if i < len(self.hidden_dims) - 1:
-                h = nn.Dense(features=self.hidden_dims[i+1])(h)
-                h = self.activation(h)
         
         # Final layer to produce the score
         outputs = nn.Dense(features=output_dim)(h)
