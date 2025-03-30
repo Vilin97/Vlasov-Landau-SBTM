@@ -35,7 +35,7 @@ RANDOM_SEED = 42      # Random seed for reproducibility
 # Test configurations
 TEST_CONFIGS = [
     {
-        "name": "1d1d",
+        "name": f"1d1d_{div_mode}",
         "dx": 1,
         "dv": 1,
         "learning_rate": LEARNING_RATE,
@@ -45,27 +45,11 @@ TEST_CONFIGS = [
         "activation": ACTIVATION,
         "num_blocks": NUM_BLOCKS,
         "num_particles": NUM_PARTICLES,
-        "div_mode": DIV_MODE,
+        "div_mode": div_mode,
         "alpha": ALPHA,
         "k": K,
         "random_seed": RANDOM_SEED
-    },
-    {
-        "name": "1d2d",
-        "dx": 1,
-        "dv": 2,
-        "learning_rate": LEARNING_RATE,
-        "num_epochs": NUM_EPOCHS,
-        "batch_size": BATCH_SIZE,
-        "hidden_dims": HIDDEN_DIMS,
-        "activation": ACTIVATION,
-        "num_blocks": NUM_BLOCKS,
-        "num_particles": NUM_PARTICLES,
-        "div_mode": DIV_MODE,
-        "alpha": ALPHA,
-        "k": K,
-        "random_seed": RANDOM_SEED
-    }
+    } for div_mode in ['approximate_gaussian', 'approximate_rademacher', 'denoised']
 ]
 
 # Create directories if they don't exist

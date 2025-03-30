@@ -133,7 +133,7 @@ def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='revers
     # Get the appropriate divergence function
     div_fn = divergence_wrt_v(s, div_mode, n_samples)
     
-    def compute_loss(x, v):
+    def compute_loss(x, v, key=None):
         # Compute squared norm of score
         score = s(x, v)
         squared_norm = jnp.sum(jnp.square(score))
@@ -141,7 +141,7 @@ def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='revers
         # Compute divergence based on mode
         if div_mode in ['approximate_gaussian', 'approximate_rademacher', 'denoised']:
             assert key is not None, "For stochastic divergence estimation, key must be provided"
-            div = div_fn(x, v, key)
+            div = div_fn(x, v, key) if key is not None else div_fn(x, v)
         else:
             div = div_fn(x, v)
             
