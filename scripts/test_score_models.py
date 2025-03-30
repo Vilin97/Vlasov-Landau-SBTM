@@ -21,9 +21,9 @@ from src.loss import explicit_score_matching_loss, implicit_score_matching_loss
 
 # Configuration variables for easy modification
 LEARNING_RATE = 5e-4  # Learning rate for model training
-NUM_EPOCHS = 200      # Number of training epochs
+NUM_EPOCHS = 100      # Number of training epochs
 BATCH_SIZE = 64       # Batch size for training
-HIDDEN_DIMS = (64, 128, 64)  # Hidden dimensions for models
+HIDDEN_DIMS = (64, 64)  # Hidden dimensions for models
 ACTIVATION = nn.soft_sign     # Activation function
 NUM_BLOCKS = 1        # Number of blocks for ResNet
 NUM_PARTICLES = 512   # Number of particles for sampling
@@ -120,6 +120,15 @@ def save_run_data(results, config, run_id):
     # Save results to pickle file
     results_path = os.path.join(results_dir, f"{config['name']}_{run_id}.pkl")
     
+    # Create a modified copy of the config without unpicklable objects
+    safe_config = {}
+    for key, value in config.items():
+        if key == 'activation':
+            # Skip the activation function
+            continue
+        else:
+            safe_config[key] = value
+    
     # Convert JAX arrays to numpy for easier loading later
     numpy_results = {}
     for key, value in results.items():
@@ -140,11 +149,22 @@ def save_run_data(results, config, run_id):
             numpy_results['losses'] = {
                 k: np.array(v) for k, v in value.items()
             }
+        elif key == 'metrics':
+            # Extract only the numeric metrics, avoiding any function objects
+            numpy_results['metrics'] = {}
+            for model_name, metric_dict in value.items():
+                numpy_results['metrics'][model_name] = {
+                    'mse': float(metric_dict['mse']),
+                    'component_mse': np.array(metric_dict['component_mse']),
+                    # Omit 'predictions' to avoid possible function references
+                }
+        elif key == 'batch_times':
+            numpy_results['batch_times'] = value
         else:
             numpy_results[key] = value
     
-    # Add config info to the results
-    numpy_results['config'] = config
+    # Add safe config info to the results
+    numpy_results['config'] = safe_config
     
     with open(results_path, 'wb') as f:
         pickle.dump(numpy_results, f)
@@ -200,6 +220,8 @@ def train_explicit_score_matching(model, train_state, x_data, v_data, true_score
         key = jrandom.PRNGKey(0)
     
     losses = []
+    batch_times = []  # Track time per batch
+    
     print(f"Training {model_name} with Explicit Score Matching for {num_epochs} epochs...")
     start_time = time.time()
     
@@ -211,24 +233,35 @@ def train_explicit_score_matching(model, train_state, x_data, v_data, true_score
         scores_shuffled = true_scores[perm]
         
         epoch_losses = []
+        # Time tracking for batches in this epoch
+        epoch_batch_times = []
+        
         for i in range(steps_per_epoch):
+            batch_start_time = time.time()
+            
             batch_idx = slice(i * batch_size, (i + 1) * batch_size)
             x_batch = x_shuffled[batch_idx]
             v_batch = v_shuffled[batch_idx]
             score_batch = scores_shuffled[batch_idx]
             train_state, loss = train_step(train_state, x_batch, v_batch, score_batch)
+            
+            batch_time = time.time() - batch_start_time
+            epoch_batch_times.append(batch_time)
             epoch_losses.append(loss)
         
         avg_loss = jnp.mean(jnp.array(epoch_losses))
+        avg_batch_time = np.mean(epoch_batch_times)
+        batch_times.append(avg_batch_time)
         losses.append(avg_loss)
         
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"{model_name} - Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.6f}")
+            print(f"{model_name} - Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.6f}, Avg batch time: {avg_batch_time*1000:.2f} ms")
     
     training_time = time.time() - start_time
-    print(f"{model_name} training completed in {training_time:.2f} seconds")
+    avg_time_per_batch = np.mean(batch_times)
+    print(f"{model_name} training completed in {training_time:.2f} seconds, avg time per batch: {avg_time_per_batch*1000:.2f} ms")
     
-    return train_state, losses
+    return train_state, losses, avg_time_per_batch
 
 def train_implicit_score_matching(model, train_state, x_data, v_data, 
                                  num_epochs=NUM_EPOCHS, batch_size=BATCH_SIZE, key=None, div_mode=DIV_MODE, model_name="Model"):
@@ -266,6 +299,8 @@ def train_implicit_score_matching(model, train_state, x_data, v_data,
         key = jrandom.PRNGKey(0)
     
     losses = []
+    batch_times = []  # Track time per batch
+    
     print(f"Training {model_name} with Implicit Score Matching for {num_epochs} epochs...")
     start_time = time.time()
     
@@ -276,24 +311,35 @@ def train_implicit_score_matching(model, train_state, x_data, v_data,
         v_shuffled = v_data[perm]
         
         epoch_losses = []
+        # Time tracking for batches in this epoch
+        epoch_batch_times = []
+        
         for i in range(steps_per_epoch):
+            batch_start_time = time.time()
+            
             batch_idx = slice(i * batch_size, (i + 1) * batch_size)
             x_batch = x_shuffled[batch_idx]
             v_batch = v_shuffled[batch_idx]
             key, subkey = jrandom.split(key)
             train_state, loss = train_step(train_state, x_batch, v_batch, subkey)
+            
+            batch_time = time.time() - batch_start_time
+            epoch_batch_times.append(batch_time)
             epoch_losses.append(loss)
         
         avg_loss = jnp.mean(jnp.array(epoch_losses))
+        avg_batch_time = np.mean(epoch_batch_times)
+        batch_times.append(avg_batch_time)
         losses.append(avg_loss)
         
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"{model_name} - Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.6f}")
+            print(f"{model_name} - Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.6f}, Avg batch time: {avg_batch_time*1000:.2f} ms")
     
     training_time = time.time() - start_time
-    print(f"{model_name} training completed in {training_time:.2f} seconds")
+    avg_time_per_batch = np.mean(batch_times)
+    print(f"{model_name} training completed in {training_time:.2f} seconds, avg time per batch: {avg_time_per_batch*1000:.2f} ms")
     
-    return train_state, losses
+    return train_state, losses, avg_time_per_batch
 
 def evaluate_model(model, params, x_data, v_data, true_scores):
     """Evaluate model performance."""
@@ -548,27 +594,27 @@ def run_test(config):
     print_evaluation_results(resnet_results_before, "ResNet Before Training")
     
     print("\n=== Training with Explicit Score Matching ===")
-    mlp_state_explicit, mlp_explicit_losses = train_explicit_score_matching(
+    mlp_state_explicit, mlp_explicit_losses, mlp_explicit_batch_time = train_explicit_score_matching(
         mlp_model, mlp_state_explicit, X, V, true_scores, 
         num_epochs=config["num_epochs"], batch_size=config["batch_size"],
         model_name="MLP"
     )
     
-    resnet_state_explicit, resnet_explicit_losses = train_explicit_score_matching(
+    resnet_state_explicit, resnet_explicit_losses, resnet_explicit_batch_time = train_explicit_score_matching(
         resnet_model, resnet_state_explicit, X, V, true_scores,
         num_epochs=config["num_epochs"], batch_size=config["batch_size"],
         model_name="ResNet"
     )
     
     print("\n=== Training with Implicit Score Matching ===")
-    mlp_state_implicit, mlp_implicit_losses = train_implicit_score_matching(
+    mlp_state_implicit, mlp_implicit_losses, mlp_implicit_batch_time = train_implicit_score_matching(
         mlp_model, mlp_state_implicit, X, V,
         num_epochs=config["num_epochs"], batch_size=config["batch_size"],
         div_mode=config["div_mode"],
         model_name="MLP"
     )
     
-    resnet_state_implicit, resnet_implicit_losses = train_implicit_score_matching(
+    resnet_state_implicit, resnet_implicit_losses, resnet_implicit_batch_time = train_implicit_score_matching(
         resnet_model, resnet_state_implicit, X, V,
         num_epochs=config["num_epochs"], batch_size=config["batch_size"],
         div_mode=config["div_mode"],
@@ -624,12 +670,37 @@ def run_test(config):
             'resnet_implicit': resnet_implicit_losses
         },
         'metrics': {
-            'mlp_explicit': mlp_results_explicit,
-            'resnet_explicit': resnet_results_explicit,
-            'mlp_implicit': mlp_results_implicit,
-            'resnet_implicit': resnet_results_implicit
+            'mlp_explicit': {
+                'mse': float(mlp_results_explicit['mse']),
+                'component_mse': np.array(mlp_results_explicit['component_mse']),
+            },
+            'resnet_explicit': {
+                'mse': float(resnet_results_explicit['mse']),
+                'component_mse': np.array(resnet_results_explicit['component_mse']),
+            },
+            'mlp_implicit': {
+                'mse': float(mlp_results_implicit['mse']),
+                'component_mse': np.array(mlp_results_implicit['component_mse']),
+            },
+            'resnet_implicit': {
+                'mse': float(resnet_results_implicit['mse']),
+                'component_mse': np.array(resnet_results_implicit['component_mse']),
+            }
+        },
+        'batch_times': {
+            'mlp_explicit': mlp_explicit_batch_time,
+            'resnet_explicit': resnet_explicit_batch_time,
+            'mlp_implicit': mlp_implicit_batch_time,
+            'resnet_implicit': resnet_implicit_batch_time
         }
     }
+    
+    # Print a summary of batch times
+    print("\n=== Training Performance Summary ===")
+    print(f"MLP Explicit Score Matching: {mlp_explicit_batch_time*1000:.2f} ms/batch")
+    print(f"ResNet Explicit Score Matching: {resnet_explicit_batch_time*1000:.2f} ms/batch")
+    print(f"MLP Implicit Score Matching: {mlp_implicit_batch_time*1000:.2f} ms/batch")
+    print(f"ResNet Implicit Score Matching: {resnet_implicit_batch_time*1000:.2f} ms/batch")
     
     # Save the results
     results_path = save_run_data(results, config, run_id)

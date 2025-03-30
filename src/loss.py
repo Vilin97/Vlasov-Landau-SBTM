@@ -124,7 +124,7 @@ def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='revers
         x_batch: Position batch of shape (batch_size, dx)
         v_batch: Velocity batch of shape (batch_size, dv)
         key: Optional JAX PRNGKey for stochastic estimators
-        div_mode: Mode for divergence computation
+        div_mode: Mode for divergence computation: 'forward', 'reverse', 'approximate_gaussian', 'approximate_rademacher', 'denoised'
         n_samples: Number of samples for stochastic divergence estimation
     
     Returns:
