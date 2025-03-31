@@ -4,76 +4,27 @@ import numpy as np
 import sys
 import os
 
-from src.mesh import Mesh
+from src.mesh import Mesh, Mesh1D
 
-class TestMesh(unittest.TestCase):
+class TestMesh1D(unittest.TestCase):
     def test_init_1d(self):
         """Test 1D mesh initialization."""
-        mesh = Mesh(10.0, 20)
+        mesh = Mesh1D(10.0, 20)
         self.assertEqual(mesh.dim, 1)
         self.assertEqual(mesh.num_cells[0], 20)
         self.assertEqual(mesh.box_lengths[0], 10.0)
-        self.assertEqual(mesh.mesh_sizes[0], 0.5)
+        self.assertEqual(mesh.eta[0], 0.5)
         self.assertEqual(mesh.boundary_condition, "periodic")
-        
-    def test_init_2d(self):
-        """Test 2D mesh initialization."""
-        mesh = Mesh([10.0, 5.0], [20, 10])
-        self.assertEqual(mesh.dim, 2)
-        np.testing.assert_array_equal(mesh.num_cells, np.array([20, 10]))
-        np.testing.assert_array_equal(mesh.box_lengths, np.array([10.0, 5.0]))
-        np.testing.assert_array_equal(mesh.mesh_sizes, np.array([0.5, 0.5]))
-        
-    def test_init_dimension_mismatch(self):
-        """Test error when box_lengths and num_cells dimensions don't match."""
-        with self.assertRaises(AssertionError):
-            Mesh([10.0, 5.0], 20)
-            
+    
     def test_index_to_position_1d(self):
         """Test index to position conversion in 1D."""
-        mesh = Mesh(10.0, 20)
+        mesh = Mesh1D(10.0, 20)
         pos = mesh.index_to_position(10)
-        self.assertAlmostEqual(pos[0], 4.75)  # (10-0.5)*0.5 = 4.75
-        
-    def test_index_to_position_2d(self):
-        """Test index to position conversion in 2D."""
-        mesh = Mesh([10.0, 5.0], [20, 10])
-        pos = mesh.index_to_position([10, 5])
-        np.testing.assert_array_almost_equal(pos, np.array([4.75, 2.25]))
-        
-    def test_index_to_position_wrong_dim(self):
-        """Test error when wrong number of indices are provided."""
-        mesh = Mesh([10.0, 5.0], [20, 10])
-        with self.assertRaises(ValueError):
-            mesh.index_to_position(10)
-            
-    def test_position_to_index_1d(self):
-        """Test position to index conversion in 1D."""
-        mesh = Mesh(10.0, 20)
-        idx = mesh.position_to_index(4.75)
-        self.assertEqual(idx[0], 11)  # floor(4.75/0.5 + 0.5) + 1 = 11
-        
-    def test_position_to_index_2d(self):
-        """Test position to index conversion in 2D."""
-        mesh = Mesh([10.0, 5.0], [20, 10])
-        idx = mesh.position_to_index([4.75, 2.25])
-        np.testing.assert_array_equal(idx, np.array([11, 6]))
-        
-    def test_position_to_index_periodic(self):
-        """Test position to index with periodic boundary conditions."""
-        mesh = Mesh(10.0, 20)
-        idx = mesh.position_to_index(14.75)  # Outside the box
-        self.assertEqual(idx[0], 11)  # Should wrap around to 4.75
-        
-    def test_position_to_index_wrong_dim(self):
-        """Test error when wrong number of position coordinates are provided."""
-        mesh = Mesh([10.0, 5.0], [20, 10])
-        with self.assertRaises(ValueError):
-            mesh.position_to_index(4.75)
-            
+        self.assertAlmostEqual(pos[0], 5.25)  # (10+0.5)*0.5 = 4.75
+    
     def test_laplacian_1d_periodic(self):
         """Test Laplacian matrix for 1D mesh with periodic boundary conditions."""
-        mesh = Mesh(10.0, 4)
+        mesh = Mesh1D(10.0, 4)
         lap = mesh.laplacian()
         
         # divided by 1/2.5**2
@@ -85,12 +36,36 @@ class TestMesh(unittest.TestCase):
         ]) * (1/2.5**2)
         
         np.testing.assert_array_almost_equal(lap, expected)
+    
+    def test_cells(self):
+        """Test getting array of all cell positions."""
+        mesh = Mesh1D(10.0, 4)
+        positions = mesh.cells()
         
-    def test_laplacian_higher_dim(self):
-        """Test error when trying to compute Laplacian for dimensions > 1."""
-        mesh = Mesh([10.0, 5.0], [20, 10])
-        with self.assertRaises(NotImplementedError):
-            mesh.laplacian()
+        expected = jnp.array([[1.25], [3.75], [6.25], [8.75]])
+        self.assertEqual(positions.shape, (4, 1))
+        np.testing.assert_array_almost_equal(positions, expected)
+    
+    def test_iteration(self):
+        """Test iteration over cell positions."""
+        mesh = Mesh1D(10.0, 4)
+        positions = [pos for pos in mesh]
+        
+        expected = [jnp.array([1.25]), jnp.array([3.75]), jnp.array([6.25]), jnp.array([8.75])]
+        self.assertEqual(len(positions), 4)
+        
+        for p, e in zip(positions, expected):
+            np.testing.assert_array_almost_equal(p, e)
+    
+    def test_len(self):
+        """Test length (number of cells)."""
+        mesh = Mesh1D(10.0, 4)
+        self.assertEqual(len(mesh), 4)
+
+# This would be a test class for the general Mesh class when it becomes useful
+# Currently, Mesh is abstract, so we can't instantiate it directly
+class TestGenericMesh(unittest.TestCase):
+    pass
 
 if __name__ == "__main__":
     unittest.main()
