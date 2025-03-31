@@ -1,6 +1,6 @@
-from typing import Union, List, Tuple
-
+from typing import Union, List, Tuple, Iterator
 import jax.numpy as jnp
+from itertools import product
 
 class Mesh:
     def __init__(
@@ -22,6 +22,31 @@ class Mesh:
         
         # Set boundary condition
         self.boundary_condition = boundary_condition
+        
+        # Pre-compute Laplacian matrix
+        self._laplacian_matrix = self._build_laplacian()
+    
+    def _build_laplacian(self) -> jnp.ndarray:
+        """Helper method to build the discrete Laplacian matrix Λ."""
+        if self.dim > 1:
+            raise NotImplementedError("Laplacian for dimensions > 1 is not implemented")
+        
+        n = self.num_cells[0]
+        eta_squared = self.mesh_sizes[0] ** 2
+        
+        # Create indices for the matrix
+        i, j = jnp.meshgrid(jnp.arange(n), jnp.arange(n), indexing='ij')
+        
+        # Set diagonal and off-diagonal elements
+        Lambda = jnp.where(i == j, -2.0, 0.0)
+        
+        if self.boundary_condition == "periodic":
+            Lambda = jnp.where(((i - j) % n == 1) | ((j - i) % n == 1), 1.0, Lambda)
+        else:
+            Lambda = jnp.where(jnp.abs(i - j) == 1, 1.0, Lambda)
+        
+        # Scale by 1/η²
+        return Lambda / eta_squared
     
     def index_to_position(self, indices: Union[int, Tuple[int, ...], List[int], jnp.ndarray]) -> jnp.ndarray:
         """Convert cell indices to physical positions."""
@@ -46,23 +71,10 @@ class Mesh:
         return jnp.floor(positions / self.mesh_sizes + 0.5).astype(jnp.int32) + 1
     
     def laplacian(self) -> jnp.ndarray:
-        """Compute the discrete Laplacian matrix Λ."""
-        if self.dim > 1:
-            raise NotImplementedError("Laplacian for dimensions > 1 is not implemented")
-        
-        n = self.num_cells[0]
-        eta_squared = self.mesh_sizes[0] ** 2
-        
-        # Create indices for the matrix
-        i, j = jnp.meshgrid(jnp.arange(n), jnp.arange(n), indexing='ij')
-        
-        # Set diagonal and off-diagonal elements
-        Lambda = jnp.where(i == j, -2.0, 0.0)
-        
-        if self.boundary_condition == "periodic":
-            Lambda = jnp.where(((i - j) % n == 1) | ((j - i) % n == 1), 1.0, Lambda)
-        else:
-            Lambda = jnp.where(jnp.abs(i - j) == 1, 1.0, Lambda)
-        
-        # Scale by 1/η²
-        return Lambda / eta_squared
+        """Return the pre-computed discrete Laplacian matrix Λ."""
+        return self._laplacian_matrix
+
+    def __len__(self) -> int:
+        """Return the total number of cells in the mesh."""
+        return int(jnp.prod(self.num_cells))
+    
