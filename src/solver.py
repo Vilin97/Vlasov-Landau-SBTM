@@ -6,7 +6,7 @@ from src.density import Density
 from src.score_model import create_mlp_score_model, create_resnet_score_model
 from src.loss import explicit_score_matching_loss, implicit_score_matching_loss
 import optax
-
+from flax import nnx
 
 @jax.jit
 def psi(x: jnp.ndarray, eta: jnp.ndarray) -> jnp.ndarray:
@@ -44,7 +44,6 @@ class Solver:
         num_particles,
         initial_density,
         initial_nn,
-        training_config,
         numerical_constants={"qe": 1.0},
         eta=None,
         seed=0,
@@ -74,57 +73,47 @@ class Solver:
         self.x, self.v = initial_density.sample(key, size=num_particles)
 
         # 2) Compute initial charge density
-        self.rho = self.compute_charge_density(self.x)
+        qe = self.numerical_constants["qe"]
+        self.rho = qe*jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta)))(cells)
 
         # 3) Solve Poisson equation
-        phi = self.solve_poisson(self.rho - jnp.sum(self.rho))
+        phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.sum(self.rho) - rho)
 
         # 4) Compute E^0
-        self.E = self.compute_electric_field(phi)
-
-        # 5) Train initial_nn using the score of f_0
-        self.train_initial_nn()
-
-    def compute_charge_density(self, x):
-        """Compute the charge density on the mesh."""
-        qe = self.numerical_constants["qe"]
-        rho = qe*jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta)))(cells)
-        return rho
-
-    def solve_poisson(self, rho):
-        """Solve the Poisson equation using the Laplacian matrix."""
-        phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), -rho)
-        return phi
-
-    def compute_electric_field(self, phi):
-        """Compute the electric field from the potential."""
-        if mesh.boundary_condition == "periodic":
-            E = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.mesh_sizes[0])
-            return E
+        if mesh.boundary_condition == "periodic" and mesh.dim == 1:
+            self.E = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.mesh_sizes[0])
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
 
-    def train_initial_nn(self):
-        # TODO
-        """Train the initial neural network using the score of the initial density."""
-        key = jax.random.PRNGKey(self.training_config["random_seed"])
-        true_scores = self.initial_density.score(self.x, self.v)
+def train_initial_model(model, x, v, initial_density, training_config):
+    """Train the initial neural network using the score of the initial density."""
+    batch_size = training_config["batch_size"]
+    num_epochs = training_config["num_epochs"]
+    abs_tol    = training_config["abs_tol"]
+    lr         = training_config["learning_rate"]
+    optimizer  = optax.adamw(lr)
+    score_vals = initial_density.score(x, v)
+    loss_fn    = lambda model, batch: explicit_score_matching_loss(model, *batch)
+    
+    for epoch in range(num_epochs):
+        loss = loss_fn(model, (x, v, score_vals))
+        if loss < abs_tol:
+            print(f"Early stopping at epoch {epoch} with loss {loss}")
+            break
+        
+        perm = jax.random.permutation(jax.random.PRNGKey(epoch), len(x))
+        x_shuffled, v_shuffled, s_shuffled = x[perm], v[perm], score_vals[perm]
 
-        # Initialize optimizer
-        optimizer = optax.adam(self.training_config["learning_rate"])
-        params = self.initial_nn.init(key, self.x, self.v)
-        opt_state = optimizer.init(params)
+        for i in range(0, len(x), batch_size):
+            x_batch = x_shuffled[i:i + batch_size]
+            v_batch = v_shuffled[i:i + batch_size]
+            s_batch = s_shuffled[i:i + batch_size]
+            batch = (x_batch, v_batch, s_batch)
+            batch_loss = opt_step(model, optimizer, loss_fn, batch)
 
-        for _ in range(self.initial_steps):
-
-            def loss_fn(params):
-                def model_fn(x, v):
-                    return self.initial_nn.apply(params, x, v)
-
-                return explicit_score_matching_loss(model_fn, self.x, self.v, true_scores)
-
-            loss, grads = jax.value_and_grad(loss_fn)(params)
-            updates, opt_state = optimizer.update(grads, opt_state, params)
-            params = optax.apply_updates(params, updates)
-
-        self.s = params
+@nnx.jit(static_argnames='loss')
+def opt_step(model, optimizer, loss, batch):
+    """Perform one step of optimization"""
+    loss_value, grads = nnx.value_and_grad(loss)(model, batch)
+    optimizer.update(grads)
+    return loss_value
