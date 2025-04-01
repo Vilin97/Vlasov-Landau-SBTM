@@ -13,7 +13,6 @@ def psi(x: jnp.ndarray, eta: jnp.ndarray) -> jnp.ndarray:
     "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
     return jnp.prod(jnp.maximum(0.0, 1.0 - jnp.abs(x / eta)) / eta, axis=-1)
 
-#%%
 def train_initial_model(model, x, v, initial_density, training_config):
     """Train the initial neural network using the score of the initial density."""
     batch_size = training_config["batch_size"]
@@ -21,7 +20,7 @@ def train_initial_model(model, x, v, initial_density, training_config):
     abs_tol    = training_config["abs_tol"]
     lr         = training_config["learning_rate"]
     
-    optimizer  = optax.adamw(lr)
+    optimizer  = nnx.Optimizer(model, optax.adamw(lr))
     score_vals = initial_density.score(x, v)
     loss_fn    = lambda model, batch: explicit_score_matching_loss(model, *batch)
     
@@ -48,7 +47,6 @@ def opt_step(model, optimizer, loss, batch):
     optimizer.update(grads)
     return loss_value
 
-#%%
 class Solver:
     def __init__(
         self,
@@ -86,13 +84,13 @@ class Solver:
 
         # 2) Compute initial charge density
         qe = self.numerical_constants["qe"]
-        self.rho = qe*jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta)))(cells)
+        self.rho = qe*jax.vmap(lambda cell: jnp.mean(psi(self.x - cell, self.eta)))(mesh.cells())
 
         # 3) Solve Poisson equation
-        phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.sum(self.rho) - rho)
+        phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.sum(self.rho) - self.rho)
 
         # 4) Compute electric field
         if mesh.boundary_condition == "periodic" and mesh.dim == 1:
-            self.E = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.mesh_sizes[0])
+            self.E = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
