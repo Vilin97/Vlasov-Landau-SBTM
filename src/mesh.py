@@ -25,13 +25,6 @@ class Mesh(ABC):
         
         # Set boundary condition
         self.boundary_condition = boundary_condition
-        
-        # Pre-compute Laplacian matrix
-        self._laplacian_matrix = self._build_laplacian()
-    
-    def _build_laplacian(self) -> jnp.ndarray:
-        """Build the discrete Laplacian matrix for the mesh."""
-        pass
     
     def index_to_position(self, indices: Union[int, Tuple[int, ...], List[int], jnp.ndarray]) -> jnp.ndarray:
         """Convert cell indices to physical positions."""
@@ -43,8 +36,8 @@ class Mesh(ABC):
         return (indices + 0.5) * self.eta
     
     def laplacian(self) -> jnp.ndarray:
-        """Return the pre-computed discrete Laplacian matrix Λ."""
-        return self._laplacian_matrix
+        """Build the discrete Laplacian matrix for the mesh."""
+        pass
 
     def __len__(self) -> int:
         """Return the total number of cells in the mesh."""
@@ -62,8 +55,8 @@ class Mesh(ABC):
 class Mesh1D(Mesh):
     """One-dimensional mesh implementation."""
     
-    def _build_laplacian(self) -> jnp.ndarray:
-        """Build the discrete Laplacian matrix for 1D mesh."""
+    def laplacian(self) -> jnp.ndarray:
+        """Discrete Laplacian matrix."""
         n = self.num_cells[0]
         eta_squared = self.eta[0] ** 2
         
@@ -80,10 +73,6 @@ class Mesh1D(Mesh):
         
         # Scale by 1/η²
         return Lambda / eta_squared
-    
-    def laplacian(self) -> jnp.ndarray:
-        """Return the pre-computed discrete Laplacian matrix."""
-        return self._laplacian_matrix
         
     def cells(self) -> jnp.ndarray:
         """Return a JAX array containing the positions of all cells.
@@ -92,11 +81,7 @@ class Mesh1D(Mesh):
             jnp.ndarray: Array of shape (num_cells, 1) containing the
                          physical positions of all cells in the 1D mesh.
         """
-        # Create array of cell indices (more efficient for 1D)
         indices = jnp.arange(self.num_cells[0]).reshape(-1, 1)
-        
-        # Convert indices to positions
         positions = (indices + 0.5) * self.eta[0]
-        
         return positions
 
