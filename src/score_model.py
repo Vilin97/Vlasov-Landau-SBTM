@@ -1,43 +1,56 @@
-import abc
-from typing import Sequence, Optional, Callable, Tuple
-
-import jax
 import jax.numpy as jnp
-import flax.linen as nn
+from flax import nnx
+import orbax.checkpoint as ocp
+import os
 
 
-class ScoreModel(abc.ABC):
-    """Base abstract class for score model implementations.
-    
-    A score model takes position (x) and velocity (v) inputs and outputs
-    a score vector of the same length as v. The model supports batched inputs,
-    where the first dimension is the batch dimension.
-    """
-    
-    @abc.abstractmethod
-    def __call__(self, x: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
-        """Compute the score for given position and velocity inputs.
-        
-        Args:
-            x: Position array of shape (batch_size, dx) or (..., dx)
-            v: Velocity array of shape (batch_size, dv) or (..., dv)
-            
-        Returns:
-            Score vector of shape (batch_size, dv) or (..., dv), 
-            matching the batch dimensions of the inputs
-        """
-        pass
+def save_model(model, path):
+    """Save a model to the specified path."""
+    os.makedirs(path, exist_ok=True)
+    _, state = nnx.split(model)
+    checkpointer = ocp.StandardCheckpointer()
+    checkpointer.save(path + '/state', state)
 
 
-class MLPScoreModel(nn.Module):
+def load_model(model_reference, path):
+    """Load a model from the specified path."""
+    path += '/state'
+    graphdef, abstract_state = nnx.split(model_reference)
+    checkpointer = ocp.StandardCheckpointer()
+    state_restored = checkpointer.restore(path, abstract_state)
+
+    model = nnx.merge(graphdef, state_restored)
+    return model
+
+
+class MLPScoreModel(nnx.Module):
     """MLP-based implementation of a score model."""
     
-    hidden_dims: Sequence[int]
-    activation: Callable = nn.relu
-    output_dim: Optional[int] = None
+    def __init__(self, dx, dv, hidden_dims=[128, 128], activation=nnx.soft_sign, seed=0):
+        """Initialize MLP score model.
+        
+        Args:
+            dx: Dimension of position (x) input
+            dv: Dimension of velocity (v) input
+            hidden_dims: Sequence of hidden dimensions
+            activation: Activation function
+            seed: Random seed for initialization
+        """
+        self.hidden_dims = hidden_dims
+        self.activation = activation
+        self.rngs = nnx.Rngs(seed)
+        
+        # Initialize layers immediately
+        self.layers = []
+        input_dim = dx + dv  # Concatenated input dimensions
+        
+        for hidden_dim in self.hidden_dims:
+            self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=self.rngs))
+            input_dim = hidden_dim
+        
+        self.final_layer = nnx.Linear(input_dim, dv, rngs=self.rngs)
     
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, x, v):
         """Compute the score using an MLP network.
         
         Args:
@@ -48,47 +61,56 @@ class MLPScoreModel(nn.Module):
             Score vector of shape (batch_size, dv) or (..., dv),
             matching the batch dimensions of the inputs
         """
-        # Get output dimension (default to velocity dimension)
-        output_dim = self.output_dim or v.shape[-1]
-        
         # Concatenate x and v along the last dimension
-        # This preserves any batch dimensions
         inputs = jnp.concatenate([x, v], axis=-1)
         
         # Pass through MLP layers
-        for dim in self.hidden_dims:
-            inputs = nn.Dense(features=dim)(inputs)
-            inputs = self.activation(inputs)
+        h = inputs
+        for layer in self.layers:
+            h = self.activation(layer(h))
         
         # Final layer to produce the score
-        outputs = nn.Dense(features=output_dim)(inputs)
+        outputs = self.final_layer(h)
         
         return outputs
 
 
-class ResNetBlock(nn.Module):
-    """A ResNet block for the score model."""
-    
-    dim: int
-    activation: Callable = nn.relu
-    
-    @nn.compact
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        y = self.activation(nn.Dense(features=self.dim)(x))
-        if x.shape[-1] == self.dim:
-            return x + y
-        return x + nn.Dense(features=x.shape[-1])(y)
-
-class ResNetScoreModel(nn.Module):
+class ResNetScoreModel(nnx.Module):
     """ResNet-based implementation of a score model."""
     
-    hidden_dims: Sequence[int]  # Changed to match MLPScoreModel
-    activation: Callable = nn.relu
-    output_dim: Optional[int] = None
-    num_blocks: int = 4  # Default number of ResNet blocks per hidden dimension
+    def __init__(self, mlp, seed=0):
+        """Initialize ResNet score model using an MLP with residual connections.
+        
+        Args:
+            mlp: An MLPScoreModel instance to use as the base network
+            seed: Random seed for initialization
+        """
+        self.mlp = mlp
+        self.activation = mlp.activation
+        self.rngs = nnx.Rngs(seed)
+        
+        # Create projections for residual connections
+        # We need to determine the input dimension (dx + dv)
+        # This will be the first layer's input dimension in the MLP
+        self.projections = []
+        
+        # Get the dimensions from the first layer in the MLP
+        if len(self.mlp.layers) > 0:
+            input_dim = self.mlp.layers[0].kernel.shape[0]  # Input dimension of first layer
+            
+            for layer in self.mlp.layers:
+                out_dim = layer.kernel.shape[1]  # Output dimension of the layer
+                
+                # If dimensions don't match, create a projection
+                if input_dim != out_dim:
+                    projection = nnx.Linear(input_dim, out_dim, rngs=self.rngs)
+                    self.projections.append(projection)
+                else:
+                    self.projections.append(None)
+                
+                input_dim = out_dim
     
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, x, v):
         """Compute the score using a ResNet architecture.
         
         Args:
@@ -99,58 +121,23 @@ class ResNetScoreModel(nn.Module):
             Score vector of shape (batch_size, dv) or (..., dv),
             matching the batch dimensions of the inputs
         """
-        # Get output dimension (default to velocity dimension)
-        output_dim = self.output_dim or v.shape[-1]
-        
         # Concatenate x and v along the last dimension
-        # This preserves any batch dimensions
         inputs = jnp.concatenate([x, v], axis=-1)
         
-        # Initial projection to first hidden dimension
-        h = nn.Dense(features=self.hidden_dims[0])(inputs)
-        h = self.activation(h)
+        # Apply ResNet layers with skip connections
+        h = inputs
         
-        # Apply ResNet blocks for each hidden dimension
-        for i, dim in enumerate(self.hidden_dims):
-            for _ in range(self.num_blocks):
-                h = ResNetBlock(dim=dim, activation=self.activation)(h)
+        # Apply each layer with its corresponding projection/skip connection
+        for i, (layer, projection) in enumerate(zip(self.mlp.layers, self.projections)):
+            layer_output = self.activation(layer(h))
+            
+            # Apply projection if dimensions don't match, otherwise add directly
+            if projection is not None:
+                h = layer_output + projection(h)
+            else:
+                h = layer_output + h
         
         # Final layer to produce the score
-        outputs = nn.Dense(features=output_dim)(h)
+        outputs = self.mlp.final_layer(h)
         
         return outputs
-
-
-# Helper functions to instantiate models
-def create_mlp_score_model(hidden_dims=(128, 128), activation=nn.relu, output_dim=None):
-    """Create an MLP-based score model.
-    
-    Args:
-        hidden_dims: Sequence of hidden dimensions
-        activation: Activation function
-        output_dim: Output dimension (if None, will use velocity dimension)
-        
-    Returns:
-        An initialized MLPScoreModel instance
-    """
-    return MLPScoreModel(hidden_dims=hidden_dims, activation=activation, output_dim=output_dim)
-
-
-def create_resnet_score_model(hidden_dims=(128, 128), activation=nn.relu, output_dim=None, num_blocks=4):
-    """Create a ResNet-based score model.
-    
-    Args:
-        hidden_dims: Sequence of hidden dimensions 
-        activation: Activation function
-        output_dim: Output dimension (if None, will use velocity dimension)
-        num_blocks: Number of ResNet blocks per hidden dimension
-        
-    Returns:
-        An initialized ResNetScoreModel instance
-    """
-    return ResNetScoreModel(
-        hidden_dims=hidden_dims,
-        activation=activation,
-        output_dim=output_dim,
-        num_blocks=num_blocks
-    )
