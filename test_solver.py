@@ -1,42 +1,37 @@
-#%%
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from flax import nnx
+import os
 
 from src.mesh import Mesh1D
 from src.density import CosineNormal
-from src.score_model import create_mlp_score_model
+from src.score_model import MLPScoreModel
 from src.solver import Solver, train_initial_model
 
-#%%
-import optax
-model = create_mlp_score_model(hidden_dims=(64,))
-nnx.Optimizer(model, optax.adamw(1e-3))
-#TODO: switch score models to inherit from nnx.Module to make the above work
-
-#%%
 def main():
     # Set random seed for reproducibility
     seed = 42
-    key = jax.random.PRNGKey(seed)
+    
+    # Set constants
+    alpha = 0.1  # Perturbation strength
+    k = 0.5      # Wave number
+    dx = 1       # Position dimension
+    dv = 1       # Velocity dimension
     
     # Create a mesh
-    box_length = 2 * jnp.pi
+    box_length = 2 * jnp.pi / k
     num_cells = 32
     mesh = Mesh1D(box_length, num_cells)
     
     # Create initial density distribution
-    alpha = 0.1  # Perturbation strength
-    k = 1.0      # Wave number
-    dv = 1       # Velocity dimension
-    initial_density = CosineNormal(alpha=alpha, k=k, dx=1, dv=dv)
+    initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
     
     # Create neural network model
-    model = create_mlp_score_model(hidden_dims=(64, 64, 64))
+    model = MLPScoreModel(dx, dv, hidden_dims=(64, 64))
     
     # Number of particles for simulation
-    num_particles = 10
+    num_particles = 1000
     
     # Initialize the solver
     print("Initializing solver...")
@@ -51,7 +46,7 @@ def main():
     # Train the model
     training_config = {
         "batch_size": 64,
-        "num_epochs": 10,
+        "num_epochs": 50,
         "abs_tol": 1e-4,
         "learning_rate": 1e-3
     }
@@ -103,15 +98,22 @@ def visualize_results(mesh, solver, x_test, v_test, model_scores, true_scores):
     
     # Plot 4: Score model comparison (for a single velocity dimension)
     plt.subplot(2, 2, 4)
-    plt.scatter(true_scores.flatten(), model_scores.flatten(), s=2, alpha=0.5)
+    plt.scatter(true_scores.flatten(), model_scores.flatten(), s=2, label='Score values')
     max_val = max(jnp.max(jnp.abs(true_scores)), jnp.max(jnp.abs(model_scores)))
-    plt.plot([-max_val, max_val], [-max_val, max_val], 'r--')
+    plt.plot([-max_val, max_val], [-max_val, max_val], 'r--', alpha=0.4, label='Perfect match')
     plt.title('Score Comparison')
     plt.xlabel('True Score')
     plt.ylabel('Model Score')
+    plt.legend()
     
     plt.tight_layout()
-    plt.savefig('solver_results.png')
+    
+    # Create plots directory if it doesn't exist
+    plots_dir = 'plots'
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    # Save figure to plots directory
+    plt.savefig(os.path.join(plots_dir, 'solver_init.png'))
     plt.show()
 
 if __name__ == "__main__":
