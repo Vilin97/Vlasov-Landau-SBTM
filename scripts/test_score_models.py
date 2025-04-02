@@ -25,7 +25,7 @@ NUM_EPOCHS = 100      # Number of training epochs
 BATCH_SIZE = 64       # Batch size for training
 HIDDEN_DIMS = [64, 64]  # Hidden dimensions for models - changed to list format for nnx
 ACTIVATION = nnx.soft_sign     # Activation function - changed to nnx.soft_sign
-NUM_PARTICLES = 512   # Number of particles for sampling
+NUM_PARTICLES = 2048   # Number of particles for sampling
 DIV_MODE = 'reverse'  # Divergence mode for implicit score matching
 ALPHA = 0.4           # Alpha parameter for CosineNormal
 K = 0.5               # K parameter for CosineNormal
@@ -47,7 +47,7 @@ TEST_CONFIGS = [
         "alpha": ALPHA,
         "k": K,
         "random_seed": RANDOM_SEED
-    } for div_mode in ['forward', 'approximate_gaussian']
+    } for div_mode in ['forward']
 ]
 
 # Create directories if they don't exist
