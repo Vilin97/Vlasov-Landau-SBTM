@@ -1,8 +1,7 @@
 import jax
 import jax.numpy as jnp
+from flax import nnx
 from typing import Callable
-from functools import partial
-from flax import struct
 
 def divergence_wrt_v(f: Callable, mode: str, n: int = 100):
     """
@@ -64,7 +63,7 @@ def divergence_wrt_v(f: Callable, mode: str, n: int = 100):
             return jax.vmap(vJv)(jax.random.split(key, n)).mean()
         return div
 
-
+@nnx.jit
 def explicit_score_matching_loss(s, x_batch, v_batch, target_score_values):
     """
     Compute the score matching loss between the score function s and the true score.
@@ -85,7 +84,7 @@ def explicit_score_matching_loss(s, x_batch, v_batch, target_score_values):
     # Compute mean squared error
     return jnp.mean(jnp.sum(jnp.square(predicted_scores - target_score_values), axis=-1))
 
-
+@nnx.jit
 def weighted_explicit_score_matching_loss(s, x_batch, v_batch, target_score_values, weighting):
     """
     Compute the weighted score matching loss between the score function s and the true score.
@@ -113,7 +112,7 @@ def weighted_explicit_score_matching_loss(s, x_batch, v_batch, target_score_valu
     
     return jnp.mean(jax.vmap(weighted_loss)(x_batch, v_batch, target_score_values, weighting))
 
-
+@nnx.jit
 def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='reverse', n_samples=100):
     """
     Compute the implicit score matching loss for score function s(x,v)
