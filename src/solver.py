@@ -213,7 +213,6 @@ class Solver:
         E = self.E
         cells = self.mesh.cells()
         eta = self.eta
-        E = self.E
         C = self.numerical_constants["C"]
         gamma = self.numerical_constants["gamma"]
         
@@ -237,11 +236,13 @@ class Solver:
             # 4. Update electric field on the mesh
             field_update = jnp.zeros_like(E_t)
             for cell_idx, cell in enumerate(self.mesh.cells()):
-                kernel_values = jax.vmap(lambda x: psi(cell - x, self.eta))(x_t)
+                kernel_values = jax.vmap(lambda x: psi(cell - x, self.eta))(x)
                 field_update = field_update.at[cell_idx].set(
-                    -dt * jnp.mean(kernel_values[:, None] * v_t, axis=0)[0]
+                    -dt * jnp.mean(kernel_values[:, None] * v, axis=0)[0]
                 )
             
+            kernel_values = psi(cells[:, None] - x[None, :], self.eta)
+            field_update = -dt * jnp.mean(kernel_values[:, :, None] * v, axis=1)[:, 0]
             E_next = E_t + field_update
             
             # 5. Train score network
@@ -255,3 +256,47 @@ class Solver:
         self.x, self.v, self.E = x_t, v_t, E_t
         
         return self.x, self.v, self.E, self.score_model
+
+#%%
+import jax.numpy as jnp
+
+n_cells = 3
+n_x = 5
+d = 2
+eta = jnp.array([1.])
+
+key = jax.random.PRNGKey(0)
+key1, key2, key3 = jax.random.split(key, 3)
+cells = jax.random.normal(key1, (n_cells, d))
+x = jax.random.normal(key2, (n_x, d))
+v = jax.random.normal(key3, (n_x, d))
+
+diff = cells[:, None] - x[None, :]
+kernel_values = psi(diff, eta)
+E = jnp.mean(kernel_values[:,:,None] * v, axis=1)
+
+i = 0 # cell index
+j = 1 # dimension index
+# comput ecoordinate i,j
+print(E[i,j])
+sum((psi(cells[i,:] -  x[k,:], eta)) * v[k,j] for k in range(n_x)) / n_x
+
+# %%
+k = 2 # particle index
+print(diff[i,k,j])
+print(cells[i,j] -  x[k,j])
+
+print(psi(cells[i,j] -  x[k,j], eta))
+print(psi(diff[i,k,j], eta))
+
+print(kernel_values[i,k])
+print(psi(cells[i,:] -  x[k,:], eta))
+
+print(kernel_values[i,k] * v[k,j])
+print(psi(cells[i,:] -  x[k,:], eta) * v[k,j])
+
+print((kernel_values[:,:,None] * v)[i,k,j])
+print(psi(cells[i,:] -  x[k,:], eta) * v[k,j])
+
+print(E[i,j])
+print(sum([psi(cells[i,:] -  x[k,:], eta) * v[k,j] for k in range(n_x)]) / n_x)
