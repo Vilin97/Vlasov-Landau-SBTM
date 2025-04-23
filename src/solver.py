@@ -126,7 +126,7 @@ class Solver:
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
         
-    def train_score_net(self, x_batch, v_batch, key=0):
+    def train_score_net(self, x_batch, v_batch, key=jax.random.PRNGKey(0)):
         """
         Train the score network using implicit score matching loss.
         
@@ -138,10 +138,6 @@ class Solver:
         Returns:
             Updated score model
         """
-        # Convert integer key to PRNG key if needed
-        if isinstance(key, int):
-            key = jax.random.PRNGKey(key)
-        
         # Extract training parameters from config
         batch_size = self.training_config["batch_size"]
         learning_rate = self.training_config["learning_rate"]
@@ -227,33 +223,21 @@ class Solver:
             # 2. Update velocities (Vlasov + Landau collision)
             s = self.score_model(x, v)
             collision_term = collision(x, v, s, eta, C, gamma)
-            v_next = v + dt * (E_at_particles - collision_term)
+            v += dt * (E_at_particles - collision_term)
             
             # 3. Update positions using projected velocities
-            x_next = x + dt * projection_onto_dx(v_next)
+            x += dt * projection_onto_dx(v)
             
-            # TODO this step and below are still to be implemented
             # 4. Update electric field on the mesh
-            field_update = jnp.zeros_like(E_t)
-            for cell_idx, cell in enumerate(self.mesh.cells()):
-                kernel_values = jax.vmap(lambda x: psi(cell - x, self.eta))(x)
-                field_update = field_update.at[cell_idx].set(
-                    -dt * jnp.mean(kernel_values[:, None] * v, axis=0)[0]
-                )
-            
             kernel_values = psi(cells[:, None] - x[None, :], self.eta)
-            field_update = -dt * jnp.mean(kernel_values[:, :, None] * v, axis=1)[:, 0]
-            E_next = E_t + field_update
+            E -= -dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
             
             # 5. Train score network
-            step_key = jax.random.fold_in(key, t)
-            self.train_score_net(x_t, v_t, key=step_key)
+            step_key = jax.random.fold_in(key, step)
+            self.train_score_net(x, v, key=step_key)
             
-            # Update state for next iteration
-            x_t, v_t, E_t = x_next, v_next, E_next
-        
         # Save final state
-        self.x, self.v, self.E = x_t, v_t, E_t
+        self.x, self.v, self.E = x, v, E
         
         return self.x, self.v, self.E, self.score_model
 
