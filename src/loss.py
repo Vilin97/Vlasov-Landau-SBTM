@@ -112,7 +112,7 @@ def weighted_explicit_score_matching_loss(s, x_batch, v_batch, target_score_valu
     
     return jnp.mean(jax.vmap(weighted_loss)(x_batch, v_batch, target_score_values, weighting))
 
-@nnx.jit
+@nnx.jit(static_argnames=['div_mode', 'n_samples'])
 def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='reverse', n_samples=100):
     """
     Compute the implicit score matching loss for score function s(x,v)

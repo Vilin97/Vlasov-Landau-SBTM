@@ -56,13 +56,18 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
     learning_rate = training_config["learning_rate"]
     num_batch_steps = training_config["num_batch_steps"]
     num_samples = x_batch.shape[0]
+    div_mode = training_config.get("div_mode", "reverse")
     
     optimizer = nnx.Optimizer(score_model, optax.adamw(learning_rate))
-    loss_fn = lambda model, batch, key: implicit_score_matching_loss(
-        lambda x, v: model(x, v), 
-        batch[0], batch[1], 
-        key=key, div_mode='reverse'
-    )
+    
+    # Define loss function without div_mode parameter in the inner lambda
+    def loss_fn(model, batch, key):
+        return implicit_score_matching_loss(
+            model, 
+            batch[0], batch[1], 
+            key=key, 
+            div_mode=div_mode
+        )
     
     step = 0
     batch_losses = []
@@ -81,16 +86,19 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
             v_mini = v_shuffled[i:i + batch_size]
             mini_batch = (x_mini, v_mini)
             
-            batch_loss = opt_step(score_model, optimizer, lambda m, b: loss_fn(m, b, step_key), mini_batch)
+            batch_loss = opt_step(score_model, optimizer, loss_fn, mini_batch, step_key)
             batch_losses.append(batch_loss)
             step += 1
             if step == num_batch_steps:
                 return batch_losses
 
 @nnx.jit(static_argnames='loss')
-def opt_step(model, optimizer, loss, batch):
+def opt_step(model, optimizer, loss, batch, key=None):
     """Perform one step of optimization"""
-    loss_value, grads = nnx.value_and_grad(loss)(model, batch)
+    if key is not None:
+        loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
+    else:
+        loss_value, grads = nnx.value_and_grad(loss)(model, batch)
     optimizer.update(grads)
     return loss_value
 
@@ -126,8 +134,9 @@ def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt):
     return v + dt * (E_at_particles - collision_term)
 
 @jax.jit
-def update_positions(x, v, dt, dx):
+def update_positions(x, v, dt):
     """Update positions using velocities."""
+    dx = x.shape[-1]
     if v.shape[-1] == dx:
         return x + dt * v
     else:
@@ -150,6 +159,7 @@ class Solver:
         numerical_constants={"qe": 1.0, "C": 1.0, "gamma": 3},
         eta=None,
         seed=0,
+        training_config=None,
     ):
         """
         Initialize the solver with the given parameters and perform the steps:
@@ -170,6 +180,7 @@ class Solver:
                 - gamma: Collision kernel exponent
             eta: Bandwidth parameter
             seed: Random seed
+            training_config: Configuration for training the score model
         """
         self.mesh = mesh
         self.num_particles = num_particles
@@ -201,6 +212,16 @@ class Solver:
             self.E = E.at[:, 0].set(E1)
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
+        
+        # Set training configuration
+        self.training_config = training_config or {
+            "batch_size": 128,
+            "learning_rate": 1e-3,
+            "num_batch_steps": 10,
+            "num_epochs": 10,
+            "abs_tol": 1e-5,
+            "div_mode": "reverse"
+        }
     
     def step(self, x, v, E, dt):
         """
@@ -229,7 +250,7 @@ class Solver:
         v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt)
         
         # 3. Update positions using projected velocities
-        x_new = update_positions(x, v_new, dt, dx)
+        x_new = update_positions(x, v_new, dt)
         
         # 4. Update electric field on the mesh
         E_new = update_electric_field(E, cells, x, v, eta, dt)
@@ -271,57 +292,3 @@ class Solver:
         self.x, self.v, self.E = x, v, E
         
         return self.x, self.v, self.E, self.score_model
-
-#%%
-import jax.numpy as jnp
-import jax
-import time
-
-n = 10000
-num_cells = 300
-dx = 1
-dv = 2
-
-eta = jnp.array([1.])
-key = jax.random.PRNGKey(42)
-key1, key2, key3 = jax.random.split(key, 3)
-x = jax.random.normal(key1, (n, dx))
-cells = jax.random.normal(key2, (num_cells, dx))
-E = jax.random.normal(key3, (num_cells, dv))
-
-print(psi(x[0] - cells, eta).shape)
-print(E.shape)
-
-i = 0 # particle index
-
-
-# Implementation 2: Vectorized approach with explicit broadcasting
-start_time = time.time()
-for _ in range(100):
-    diff = x[:, None, :] - cells[None, :, :]       # Shape: (n, num_cells, dx)
-    psi_vals = psi(diff, eta)                      # Shape: (n, num_cells)
-    E_weighted = psi_vals[..., None] * E[None, :, :]  # Shape: (n, num_cells, dv)
-    E_at_particles2 = jnp.sum(E_weighted, axis=1) / num_cells  # Shape: (n, dv)
-implementation2_time = time.time() - start_time
-print(f"Implementation 2 time: {implementation2_time:.6f} seconds")
-
-# Implementation 3: Using jax.vmap
-start_time = time.time()
-for _ in range(100):
-    E_at_particles3 = jax.vmap(lambda x_i: jnp.mean(psi(x_i - cells, eta)[:, None] * E, axis=0))(x)
-implementation3_time = time.time() - start_time
-print(f"Implementation 3 time: {implementation3_time:.6f} seconds")
-
-# Implementation 1: List comprehension approach
-# start_time = time.time()
-# for _ in range(1):
-#     E_at_particles1 = jnp.array([sum(psi(x[i] - cells[k], eta) * E[k] for k in range(num_cells)) / num_cells for i in range(n)])
-# implementation1_time = time.time() - start_time
-# print(f"Implementation 1 time: {implementation1_time:.6f} seconds")
-
-# # Verify all implementations give the same result
-# print("\nVerification:")
-# print("Implementation 1 and 2 match:", jnp.allclose(E_at_particles1, E_at_particles2))
-print("Implementation 2 and 3 match:", jnp.allclose(E_at_particles2, E_at_particles3))
-# print("Implementation 1 and 3 match:", jnp.allclose(E_at_particles1, E_at_particles3))
-# %%

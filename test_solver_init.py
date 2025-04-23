@@ -91,7 +91,7 @@ def visualize_results(mesh, solver, x_test, v_test, model_scores, true_scores):
     
     # Plot 3: Electric field
     plt.subplot(2, 2, 3)
-    plt.plot(x_cells, solver.E)
+    plt.plot(x_cells, solver.E[:,0])
     plt.title('Electric Field')
     plt.xlabel('Position (x)')
     plt.ylabel('Electric Field (E)')

@@ -32,12 +32,12 @@ def main():
     model = MLPScoreModel(dx, dv, hidden_dims=(64, 64))
     
     # Number of particles for simulation
-    num_particles = 1000
+    num_particles = 100
     
     # Define training configuration
     training_config = {
         "batch_size": 64,
-        "num_epochs": 5,
+        "num_epochs": 2,
         "abs_tol": 1e-4,
         "learning_rate": 1e-3,
         "num_batch_steps": 5  # Reduced number of steps for faster testing
@@ -52,7 +52,6 @@ def main():
         initial_nn=model,
         seed=seed
     )
-    print(f"{solver.E.shape=}")
     
     # Add training_config to solver (needed for the step method)
     solver.training_config = training_config
