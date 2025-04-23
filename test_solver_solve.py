@@ -32,7 +32,7 @@ def main():
     model = MLPScoreModel(dx, dv, hidden_dims=(64, 64))
     
     # Number of particles for simulation
-    num_particles = 100
+    num_particles = 1000
     
     # Define training configuration
     training_config = {

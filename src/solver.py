@@ -240,7 +240,6 @@ class Solver:
         eta = self.eta
         C = self.numerical_constants["C"]
         gamma = self.numerical_constants["gamma"]
-        dx = x.shape[-1]
         
         # 1. Evaluate electric field at particle positions
         E_at_particles = evaluate_field_at_particles(x, cells, E, eta)
