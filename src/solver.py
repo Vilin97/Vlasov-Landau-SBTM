@@ -49,7 +49,7 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
         key: JAX random key or seed integer
         
     Returns:
-        Updated score model
+        The list of batch losses during training.
     """
     # Extract training parameters from config
     batch_size = training_config["batch_size"]
@@ -65,6 +65,7 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
     )
     
     step = 0
+    batch_losses = []
     for epoch in range(num_batch_steps):
         # Generate a random key for this step
         epoch_key = jax.random.PRNGKey(epoch)
@@ -81,9 +82,10 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
             mini_batch = (x_mini, v_mini)
             
             batch_loss = opt_step(score_model, optimizer, lambda m, b: loss_fn(m, b, step_key), mini_batch)
+            batch_losses.append(batch_loss)
             step += 1
             if step == num_batch_steps:
-                return score_model
+                return batch_losses
 
 @nnx.jit(static_argnames='loss')
 def opt_step(model, optimizer, loss, batch):
@@ -112,6 +114,32 @@ def collision(x, v, s, eta, C, gamma):
         return jnp.mean(collision_terms, axis=0)
     return jax.vmap(compute_single_collision)(x, v, s)
 
+@jax.jit
+def evaluate_field_at_particles(x, cells, E, eta):
+    """Evaluate electric field at particle positions."""
+    return jax.vmap(lambda x_i: jnp.mean(psi(x_i - cells, eta) * E))(x)
+
+@jax.jit
+def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt):
+    """Update velocities using electric field and collision term."""
+    collision_term = collision(x, v, s, eta, C, gamma)
+    return v + dt * (E_at_particles - collision_term)
+
+@jax.jit
+def update_positions(x, v, dt, dx):
+    """Update positions using velocities."""
+    if v.shape[-1] == dx:
+        return x + dt * v
+    else:
+        return x + dt * v[..., :dx]
+
+@jax.jit
+def update_electric_field(E, cells, x, v, eta, dt):
+    """Update electric field on the mesh."""
+    kernel_values = psi(cells[:, None] - x[None, :], eta)
+    return E + dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
+
+#%%
 class Solver:
     def __init__(
         self,
@@ -172,7 +200,44 @@ class Solver:
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
     
-    def solve(self, final_time, dt, key=0):
+    def step(self, x, v, E, dt):
+        """
+        Perform a single time step of the simulation.
+        
+        Args:
+            x: Particle positions
+            v: Particle velocities
+            E: Electric field
+            dt: Time step size
+            
+        Returns:
+            Updated particle positions, velocities, and electric field
+        """
+        cells = self.mesh.cells()
+        eta = self.eta
+        C = self.numerical_constants["C"]
+        gamma = self.numerical_constants["gamma"]
+        dx = x.shape[-1]
+        
+        # 1. Evaluate electric field at particle positions
+        E_at_particles = evaluate_field_at_particles(x, cells, E, eta)
+        
+        # 2. Update velocities (Vlasov + Landau collision)
+        s = self.score_model(x, v)
+        v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt)
+        
+        # 3. Update positions using projected velocities
+        x_new = update_positions(x, v_new, dt, dx)
+        
+        # 4. Update electric field on the mesh
+        E_new = update_electric_field(E, cells, x, v, eta, dt)
+        
+        # 5. Train score network
+        train_score_model(self.score_model, x_new, v_new, self.training_config)
+        
+        return x_new, v_new, E_new
+    
+    def solve(self, final_time, dt):
         """
         Solve the Maxwell-Vlasov-Landau system using SBTM.
         
@@ -184,17 +249,6 @@ class Solver:
         Returns:
             Particle states, electric field, and score model at final time
         """
-        
-        dx = self.x.shape[-1]
-        if self.v.shape[-1] == dx:
-            projection_onto_dx = lambda v: v
-        else:
-            projection_onto_dx = lambda v: v[..., :dx]
-        
-        # Convert integer key to PRNG key if needed
-        if isinstance(key, int):
-            key = jax.random.PRNGKey(key)
-        
         # Calculate number of time steps
         num_steps = int(final_time / dt)
         
@@ -202,80 +256,16 @@ class Solver:
         x = self.x
         v = self.v
         E = self.E
-        cells = self.mesh.cells()
-        eta = self.eta
-        C = self.numerical_constants["C"]
-        gamma = self.numerical_constants["gamma"]
         
-        for step in range(num_steps):
+        for step_idx in range(num_steps):
             # Optional logging
-            if step % 10 == 0:
-                print(f"Step {step}/{num_steps}")
+            if step_idx % 10 == 0:
+                print(f"Step {step_idx}/{num_steps}")
             
-            # 1. Evaluate electric field at particle positions
-            E_at_particles = jax.vmap(lambda x: jnp.mean(psi(x - cells, eta) * E))(x)
-            
-            # 2. Update velocities (Vlasov + Landau collision)
-            s = self.score_model(x, v)
-            collision_term = collision(x, v, s, eta, C, gamma)
-            v += dt * (E_at_particles - collision_term)
-            
-            # 3. Update positions using projected velocities
-            x += dt * projection_onto_dx(v)
-            
-            # 4. Update electric field on the mesh
-            kernel_values = psi(cells[:, None] - x[None, :], self.eta)
-            E -= -dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
-            
-            # 5. Train score network
-            step_key = jax.random.fold_in(key, step)
-            self.train_score_model(x, v, key=step_key)
+            # Perform one simulation step
+            x, v, E = self.step(x, v, E, dt)
             
         # Save final state
         self.x, self.v, self.E = x, v, E
         
         return self.x, self.v, self.E, self.score_model
-
-#%%
-import jax.numpy as jnp
-
-n_cells = 3
-n_x = 5
-d = 2
-eta = jnp.array([1.])
-
-key = jax.random.PRNGKey(0)
-key1, key2, key3 = jax.random.split(key, 3)
-cells = jax.random.normal(key1, (n_cells, d))
-x = jax.random.normal(key2, (n_x, d))
-v = jax.random.normal(key3, (n_x, d))
-
-diff = cells[:, None] - x[None, :]
-kernel_values = psi(diff, eta)
-E = jnp.mean(kernel_values[:,:,None] * v, axis=1)
-
-i = 0 # cell index
-j = 1 # dimension index
-# comput ecoordinate i,j
-print(E[i,j])
-sum((psi(cells[i,:] -  x[k,:], eta)) * v[k,j] for k in range(n_x)) / n_x
-
-# %%
-k = 2 # particle index
-print(diff[i,k,j])
-print(cells[i,j] -  x[k,j])
-
-print(psi(cells[i,j] -  x[k,j], eta))
-print(psi(diff[i,k,j], eta))
-
-print(kernel_values[i,k])
-print(psi(cells[i,:] -  x[k,:], eta))
-
-print(kernel_values[i,k] * v[k,j])
-print(psi(cells[i,:] -  x[k,:], eta) * v[k,j])
-
-print((kernel_values[:,:,None] * v)[i,k,j])
-print(psi(cells[i,:] -  x[k,:], eta) * v[k,j])
-
-print(E[i,j])
-print(sum([psi(cells[i,:] -  x[k,:], eta) * v[k,j] for k in range(n_x)]) / n_x)
