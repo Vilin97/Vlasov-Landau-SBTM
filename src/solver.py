@@ -117,7 +117,7 @@ def collision(x, v, s, eta, C, gamma):
 @jax.jit
 def evaluate_field_at_particles(x, cells, E, eta):
     """Evaluate electric field at particle positions."""
-    return jax.vmap(lambda x_i: jnp.mean(psi(x_i - cells, eta) * E))(x)
+    return jax.vmap(lambda x_i: jnp.mean(psi(x_i - cells, eta)[:, None] * E, axis=0))(x)
 
 @jax.jit
 def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt):
@@ -196,7 +196,9 @@ class Solver:
 
         # 4) Compute electric field
         if mesh.boundary_condition == "periodic" and mesh.dim == 1:
-            self.E = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
+            E1 = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
+            E = jnp.zeros((E1.shape[0], self.v.shape[-1]))
+            self.E = E.at[:, 0].set(E1)
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
     
@@ -269,3 +271,57 @@ class Solver:
         self.x, self.v, self.E = x, v, E
         
         return self.x, self.v, self.E, self.score_model
+
+#%%
+import jax.numpy as jnp
+import jax
+import time
+
+n = 10000
+num_cells = 300
+dx = 1
+dv = 2
+
+eta = jnp.array([1.])
+key = jax.random.PRNGKey(42)
+key1, key2, key3 = jax.random.split(key, 3)
+x = jax.random.normal(key1, (n, dx))
+cells = jax.random.normal(key2, (num_cells, dx))
+E = jax.random.normal(key3, (num_cells, dv))
+
+print(psi(x[0] - cells, eta).shape)
+print(E.shape)
+
+i = 0 # particle index
+
+
+# Implementation 2: Vectorized approach with explicit broadcasting
+start_time = time.time()
+for _ in range(100):
+    diff = x[:, None, :] - cells[None, :, :]       # Shape: (n, num_cells, dx)
+    psi_vals = psi(diff, eta)                      # Shape: (n, num_cells)
+    E_weighted = psi_vals[..., None] * E[None, :, :]  # Shape: (n, num_cells, dv)
+    E_at_particles2 = jnp.sum(E_weighted, axis=1) / num_cells  # Shape: (n, dv)
+implementation2_time = time.time() - start_time
+print(f"Implementation 2 time: {implementation2_time:.6f} seconds")
+
+# Implementation 3: Using jax.vmap
+start_time = time.time()
+for _ in range(100):
+    E_at_particles3 = jax.vmap(lambda x_i: jnp.mean(psi(x_i - cells, eta)[:, None] * E, axis=0))(x)
+implementation3_time = time.time() - start_time
+print(f"Implementation 3 time: {implementation3_time:.6f} seconds")
+
+# Implementation 1: List comprehension approach
+# start_time = time.time()
+# for _ in range(1):
+#     E_at_particles1 = jnp.array([sum(psi(x[i] - cells[k], eta) * E[k] for k in range(num_cells)) / num_cells for i in range(n)])
+# implementation1_time = time.time() - start_time
+# print(f"Implementation 1 time: {implementation1_time:.6f} seconds")
+
+# # Verify all implementations give the same result
+# print("\nVerification:")
+# print("Implementation 1 and 2 match:", jnp.allclose(E_at_particles1, E_at_particles2))
+print("Implementation 2 and 3 match:", jnp.allclose(E_at_particles2, E_at_particles3))
+# print("Implementation 1 and 3 match:", jnp.allclose(E_at_particles1, E_at_particles3))
+# %%
