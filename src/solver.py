@@ -39,6 +39,52 @@ def train_initial_model(model, x, v, initial_density, training_config):
             batch = (x_batch, v_batch, s_batch)
             batch_loss = opt_step(model, optimizer, loss_fn, batch)
 
+def train_score_model(score_model, x_batch, v_batch, training_config):
+    """
+    Train the score network using implicit score matching loss.
+    
+    Args:
+        x_batch: Particle positions of shape (num_particles, dx)
+        v_batch: Particle velocities of shape (num_particles, dv)
+        key: JAX random key or seed integer
+        
+    Returns:
+        Updated score model
+    """
+    # Extract training parameters from config
+    batch_size = training_config["batch_size"]
+    learning_rate = training_config["learning_rate"]
+    num_batch_steps = training_config["num_batch_steps"]
+    num_samples = x_batch.shape[0]
+    
+    optimizer = nnx.Optimizer(score_model, optax.adamw(learning_rate))
+    loss_fn = lambda model, batch, key: implicit_score_matching_loss(
+        lambda x, v: model(x, v), 
+        batch[0], batch[1], 
+        key=key, div_mode='reverse'
+    )
+    
+    step = 0
+    for epoch in range(num_batch_steps):
+        # Generate a random key for this step
+        epoch_key = jax.random.PRNGKey(epoch)
+        
+        # Shuffle data for each step
+        perm = jax.random.permutation(epoch_key, num_samples)
+        x_shuffled, v_shuffled = x_batch[perm], v_batch[perm]
+        
+        # Process mini-batches
+        for i in range(0, num_samples, batch_size):
+            step_key = jax.random.fold_in(epoch_key, i)
+            x_mini = x_shuffled[i:i + batch_size]
+            v_mini = v_shuffled[i:i + batch_size]
+            mini_batch = (x_mini, v_mini)
+            
+            batch_loss = opt_step(score_model, optimizer, lambda m, b: loss_fn(m, b, step_key), mini_batch)
+            step += 1
+            if step == num_batch_steps:
+                return score_model
+
 @nnx.jit(static_argnames='loss')
 def opt_step(model, optimizer, loss, batch):
     """Perform one step of optimization"""
@@ -125,54 +171,6 @@ class Solver:
             self.E = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
-        
-    def train_score_net(self, x_batch, v_batch, key=jax.random.PRNGKey(0)):
-        """
-        Train the score network using implicit score matching loss.
-        
-        Args:
-            x_batch: Particle positions of shape (num_particles, dx)
-            v_batch: Particle velocities of shape (num_particles, dv)
-            key: JAX random key or seed integer
-            
-        Returns:
-            Updated score model
-        """
-        # Extract training parameters from config
-        batch_size = self.training_config["batch_size"]
-        learning_rate = self.training_config["learning_rate"]
-        num_steps = self.training_config["score_update_steps"]
-        
-        optimizer = nnx.Optimizer(self.score_model, optax.adamw(learning_rate))
-        loss_fn = lambda model, batch, key: implicit_score_matching_loss(
-            lambda x, v: model(x, v), 
-            batch[0], batch[1], 
-            key=key, div_mode='reverse'
-        )
-        
-        # Create batches
-        num_samples = x_batch.shape[0]
-        
-        for step in range(num_steps):
-            # Generate a random key for this step
-            step_key = jax.random.fold_in(key, step)
-            
-            # Shuffle data for each step
-            perm = jax.random.permutation(step_key, num_samples)
-            x_shuffled, v_shuffled = x_batch[perm], v_batch[perm]
-            
-            # Process mini-batches
-            for i in range(0, num_samples, batch_size):
-                x_mini = x_shuffled[i:i + batch_size]
-                v_mini = v_shuffled[i:i + batch_size]
-                mini_batch = (x_mini, v_mini)
-                
-                # Perform optimization step
-                batch_loss = opt_step(self.score_model, optimizer, 
-                                     lambda m, b: loss_fn(m, b, step_key), 
-                                     mini_batch)
-        
-        return self.score_model
     
     def solve(self, final_time, dt, key=0):
         """
@@ -188,7 +186,7 @@ class Solver:
         """
         
         dx = self.x.shape[-1]
-        if v.shape[-1] == dx:
+        if self.v.shape[-1] == dx:
             projection_onto_dx = lambda v: v
         else:
             projection_onto_dx = lambda v: v[..., :dx]
@@ -196,9 +194,6 @@ class Solver:
         # Convert integer key to PRNG key if needed
         if isinstance(key, int):
             key = jax.random.PRNGKey(key)
-        
-        # Extract parameters from config
-        score_update_steps = self.training_config["score_update_steps"]
         
         # Calculate number of time steps
         num_steps = int(final_time / dt)
@@ -234,7 +229,7 @@ class Solver:
             
             # 5. Train score network
             step_key = jax.random.fold_in(key, step)
-            self.train_score_net(x, v, key=step_key)
+            self.train_score_model(x, v, key=step_key)
             
         # Save final state
         self.x, self.v, self.E = x, v, E
