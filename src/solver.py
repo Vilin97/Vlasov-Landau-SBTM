@@ -104,10 +104,10 @@ def opt_step(model, optimizer, loss, batch, key=None):
 
 @jax.jit
 def A(z, C, gamma):
-    "Collision kernel A(z) = C|z|^(-γ)(I_d|z|^2 - z⊗z)"
+    "Collision kernel A(z) = C|z|^(γ)(I_d|z|^2 - z⊗z)"
     z_norm = jnp.linalg.norm(z)
     z_norm_safe = jnp.maximum(z_norm, 1e-10)
-    z_norm_pow = z_norm_safe ** (-gamma)
+    z_norm_pow = z_norm_safe ** gamma
     z_outer = jnp.outer(z, z)
     I_scaled = jnp.eye(z.shape[0]) * (z_norm ** 2)
     return C * z_norm_pow * (I_scaled - z_outer)
@@ -156,7 +156,7 @@ class Solver:
         num_particles,
         initial_density,
         initial_nn,
-        numerical_constants={"qe": 1.0, "C": 1.0, "gamma": 3},
+        numerical_constants,
         eta=None,
         seed=0,
         training_config=None,
