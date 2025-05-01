@@ -75,7 +75,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
 seed = 42
 
 # Set constants
-alpha = 1  # Perturbation strength
+alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 2       # Velocity dimension (as requested)
@@ -208,7 +208,7 @@ box_length = mesh.box_lengths[0]
 rho = qe*jax.vmap(lambda cell: jnp.mean(psi(solver.x - cell, solver.eta, box_length)))(mesh.cells())
 plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
 E1 = solver.E[:,0]
-plt.plot(mesh.cells(), (jnp.roll(E1, -1) - jnp.roll(E1, 1)) / (2 * solver.eta), label='dE/dx')
+plt.plot(mesh.cells(), (jnp.roll(E1, 0) - jnp.roll(E1, 1)) / solver.eta, label='dE/dx')
 plt.plot(mesh.cells(), E1, label='E')
 plt.legend()
 plt.show()
