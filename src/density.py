@@ -64,9 +64,12 @@ class CosineNormal(Density):
         self.cov = jnp.eye(dv)
         
     def log_density(self, x, v):
+        if x.shape != (1,):
+            raise NotImplementedError("log_density does not accept a batch of data")
+        
         spatial_part = jnp.log(jnp.clip(1 + self.alpha * jnp.cos(self.k * x), a_min=1e-10))
         velocity_part = multivariate_normal.logpdf(v, self.mean, self.cov)
-        
+
         return (spatial_part + velocity_part)[0]
     
     def density(self, x, v):

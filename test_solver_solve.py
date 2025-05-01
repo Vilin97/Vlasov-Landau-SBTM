@@ -10,13 +10,7 @@ from tqdm import tqdm
 from src.mesh import Mesh1D
 from src.density import CosineNormal
 from src.score_model import MLPScoreModel
-from src.solver import Solver, train_initial_model, psi
-
-def calculate_charge_density(solver):
-    """Calculate the charge density on the mesh."""
-    qe = solver.numerical_constants["qe"]
-    return qe * jax.vmap(lambda cell: jnp.mean(
-        psi(solver.x - cell, solver.eta)))(solver.mesh.cells())
+from src.solver import Solver, train_initial_model, psi, evaluate_charge_density
 
 def visualize_results(solver, mesh, times, e_l2_norms):
     """Visualize the results of the solver simulation."""
@@ -39,7 +33,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     # Plot 3: Final charge density
     plt.subplot(2, 3, 3)
     x_cells = mesh.cells().flatten()
-    rho = calculate_charge_density(solver)
+    rho = evaluate_charge_density(solver.x, solver.mesh.cells(), solver.eta, solver.mesh.box_lengths[0])
     plt.plot(x_cells, rho)
     plt.title('Final Charge Density')
     plt.xlabel('Position (x)')
@@ -81,7 +75,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
 seed = 42
 
 # Set constants
-alpha = 0.1  # Perturbation strength
+alpha = 1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 2       # Velocity dimension (as requested)
@@ -92,7 +86,7 @@ numerical_constants={"qe": qe, "C": C, "gamma": gamma}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 128
+num_cells = 64 # small number for debugging
 mesh = Mesh1D(box_length, num_cells)
 
 # Create initial density distribution
@@ -102,7 +96,7 @@ initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 model = MLPScoreModel(dx, dv, hidden_dims=(64, ))
 
 # Number of particles for simulation
-num_particles = 100000
+num_particles = 1000
 
 # Define training configuration
 training_config = {
@@ -113,6 +107,92 @@ training_config = {
     "num_batch_steps": 0  # don't train NN when C=0
 }
 
+#%%
+# eta = mesh.eta
+
+# # 1) Sample particle positions and velocities
+# key = jax.random.PRNGKey(seed)
+# x, v = initial_density.sample(key, size=num_particles)
+
+# plt.figure()
+# xs = jnp.linspace(start=0,stop=box_length,num=100).reshape(-1,1)
+# vs = jnp.zeros((100, 2))
+# plt.subplot(3, 1, 1)
+# vals = initial_density(xs, vs)
+# plt.plot(xs, vals / jnp.sum(vals) * box_length, label='density')
+# plt.hist(x, density=True, bins=40, label='sample')
+# plt.legend()
+
+# # 2) Compute initial charge density
+# rho = qe*jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta)))(mesh.cells())
+
+# # 3) Solve Poisson equation
+# phi, info = jax.scipy.sparse.linalg.cg(mesh.laplacian(), jnp.mean(rho) - rho)
+
+# # 4) Compute electric field
+# E1 = -(jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * mesh.eta[0])
+# E = jnp.zeros((E1.shape[0], v.shape[-1]))
+# E = E.at[:, 0].set(E1)
+
+# E_int = jnp.cumsum(rho - jnp.mean(rho)) * eta
+
+# plt.subplot(3, 1, 2)
+# plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
+# plt.plot(mesh.cells(), (jnp.roll(E1, -1) - jnp.roll(E1, 1)) / (2 * eta), label='dE/dx')
+# # plt.plot(mesh.cells(), (E_int - jnp.roll(E_int, 1)) / eta, label='dE`/dx')
+# plt.legend()
+
+# plt.subplot(3, 1, 3)
+# plt.plot(mesh.cells(), E1, label='E')
+# plt.plot(mesh.cells(), E_int, label='E`')
+# plt.legend()
+# plt.show()
+
+# print(f"{x=}")
+# print(f"{rho=}")
+
+# what must E satisfy?
+# 1. dE/dx = rho - mean(rho)
+# 2. E is conservative -- this is always true in 1d
+
+# print((jnp.roll(E1, -1) - jnp.roll(E1, 1)) / (2 * mesh.eta[0]))
+# print(rho - jnp.mean(rho))
+
+#%%
+solver = Solver(
+    mesh=mesh,
+    num_particles=num_particles,
+    initial_density=initial_density,
+    initial_nn=model,
+    numerical_constants=numerical_constants,
+    seed=seed
+)
+
+#%%
+def psi(x: jnp.ndarray, eta: jnp.ndarray, L) -> jnp.ndarray:
+    "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
+    x = jnp.min(x, L - x)
+    return jnp.prod(jnp.maximum(0., 1. - jnp.abs(x) / eta) / eta, axis=-1)
+
+def evaluate_field_at_particles(x, cells, E, eta):
+    """Evaluate electric field at particle positions."""
+    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta)[:, None] * E, axis=0))(x)
+
+def update_electric_field(E, cells, x, v, eta, dt):
+    """Update electric field on the mesh."""
+    kernel_values = psi(cells[:, None] - x[None, :], eta)
+    return E + dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
+
+E1 = solver.E[:,0]
+E_p = evaluate_field_at_particles(solver.x, mesh.cells(), solver.E, mesh.eta)
+x1 = solver.x[:,0]
+indices = jnp.argsort(x1)
+plt.plot(mesh.cells(), E1, label='E at cells')
+plt.plot(x1[indices], E_p[indices, 0], label='E at particles')
+plt.legend()
+plt.show()
+
+#%%
 # Initialize the solver
 print("Initializing solver...")
 solver = Solver(
@@ -123,6 +203,15 @@ solver = Solver(
     numerical_constants=numerical_constants,
     seed=seed
 )
+
+box_length = mesh.box_lengths[0]
+rho = qe*jax.vmap(lambda cell: jnp.mean(psi(solver.x - cell, solver.eta, box_length)))(mesh.cells())
+plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
+E1 = solver.E[:,0]
+plt.plot(mesh.cells(), (jnp.roll(E1, -1) - jnp.roll(E1, 1)) / (2 * solver.eta), label='dE/dx')
+plt.plot(mesh.cells(), E1, label='E')
+plt.legend()
+plt.show()
 
 # Add training_config to solver (needed for the step method)
 solver.training_config = training_config
@@ -147,8 +236,7 @@ e_l2_norms[0] = jnp.sqrt((jnp.sum(solver.E**2) * solver.eta))[0]
 print("Running simulation...")
 x, v, E = solver.x, solver.v, solver.E
 
-#%%
-for step in tqdm(range(num_steps)):
+for step in range(num_steps):
     # Perform a single time step
     x, v, E = solver.step(x, v, E, dt)
     
@@ -158,15 +246,17 @@ for step in tqdm(range(num_steps)):
     # Print progress
     if (step+1) % 10 == 0:
         print(f"Completed step {step+1}/{num_steps}, L2 norm of E: {e_l2_norms[step+1]:.6f}")
-    if (step+1) % 50 == 0:
-        plt.plot(times[:step], e_l2_norms[:step])
-        plt.title('L2 Norm of Electric Field')
-        plt.xlabel('Time')
-        plt.ylabel('||E||_2')
-        plt.show()
+    # if (step+1) % 50 == 0:
+plt.plot(times[:step], e_l2_norms[:step])
+# plt.yscale('log')
+plt.title('L2 Norm of Electric Field')
+plt.xlabel('Time')
+plt.ylabel('||E||_2')
+plt.show()
 
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
 
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
+# %%

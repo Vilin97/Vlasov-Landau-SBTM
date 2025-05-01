@@ -6,12 +6,12 @@ import optax
 from flax import nnx
 
 @jax.jit
-def psi(x: jnp.ndarray, eta: jnp.ndarray) -> jnp.ndarray:
+def psi(x: jnp.ndarray, eta: jnp.ndarray, box_length) -> jnp.ndarray:
     "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
+    x = mod(x, box_length)
     return jnp.prod(jnp.maximum(0.0, 1.0 - jnp.abs(x / eta)) / eta, axis=-1)
 
 #%%
-
 def train_initial_model(model, x, v, initial_density, training_config):
     """Train the initial neural network using the score of the initial density."""
     batch_size = training_config["batch_size"]
@@ -113,40 +113,52 @@ def A(z, C, gamma):
     return C * z_norm_pow * (I_scaled - z_outer)
 
 @jax.jit
-def collision(x, v, s, eta, C, gamma):
+def collision(x, v, s, eta, C, gamma, box_length):
     "Collision operator Q(f,f) = ¹⁄ₙ ∑ ψ(x[p] - x[q]) A(v[p] - v[q]) * (s[p] - s[q])"
     def compute_single_collision(xp, vp, sp):
         collision_terms = jax.vmap(
-            lambda xq, vq, sq: psi(xp - xq, eta) * jnp.dot(A(vp - vq, C, gamma), (sp - sq))
+            lambda xq, vq, sq: psi(xp - xq, eta, box_length) * jnp.dot(A(vp - vq, C, gamma), (sp - sq))
         )(x, v, s)
         return jnp.mean(collision_terms, axis=0)
     return jax.vmap(compute_single_collision)(x, v, s)
 
+# TODO: [speed] since cells are eta apart, the array psi(x_i - cells, eta) has *exactly* 2 non-zero entries
 @jax.jit
-def evaluate_field_at_particles(x, cells, E, eta):
+def evaluate_field_at_particles(x, cells, E, eta, box_length):
     """Evaluate electric field at particle positions."""
-    return jax.vmap(lambda x_i: jnp.mean(psi(x_i - cells, eta)[:, None] * E, axis=0))(x)
+    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta, box_length)[:, None] * E, axis=0))(x)
 
 @jax.jit
-def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt):
+def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length):
     """Update velocities using electric field and collision term."""
-    collision_term = collision(x, v, s, eta, C, gamma)
+    collision_term = collision(x, v, s, eta, C, gamma, box_length)
     return v + dt * (E_at_particles - collision_term)
 
 @jax.jit
-def update_positions(x, v, dt):
-    """Update positions using velocities."""
+def update_positions(x, v, dt, box_length):
+    """Update positions using velocities, modulo box_length."""
     dx = x.shape[-1]
     if v.shape[-1] == dx:
-        return x + dt * v
+        x = x + dt * v
     else:
-        return x + dt * v[..., :dx]
+        x = x + dt * v[..., :dx]
+    return mod(x, box_length)
 
 @jax.jit
-def update_electric_field(E, cells, x, v, eta, dt):
+def mod(x, box_length):
+    "compute x modulo box_length"
+    mask = 1. * (x < 0) - 1 * (x > box_length)
+    return x + mask * box_length
+
+@jax.jit
+def update_electric_field(E, cells, x, v, eta, dt, box_length):
     """Update electric field on the mesh."""
-    kernel_values = psi(cells[:, None] - x[None, :], eta)
+    kernel_values = psi(cells[:, None] - x[None, :], eta, box_length)
     return E + dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
+
+@jax.jit
+def evaluate_charge_density(x, cells, eta, box_length, qe=1):
+    return qe * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
 
 #%%
 class Solver:
@@ -186,6 +198,8 @@ class Solver:
         self.num_particles = num_particles
         self.score_model = initial_nn
         self.numerical_constants = numerical_constants
+        self.training_config = training_config
+        box_length = self.mesh.box_lengths[0]
         
         # Set bandwidth of kernel equal to mesh width
         if eta is None:
@@ -200,29 +214,20 @@ class Solver:
 
         # 2) Compute initial charge density
         qe = self.numerical_constants["qe"]
-        rho = qe*jax.vmap(lambda cell: jnp.mean(psi(self.x - cell, self.eta)))(mesh.cells())
+        rho = evaluate_charge_density(self.x, mesh.cells(), mesh.eta, box_length, qe=1)
 
         # 3) Solve Poisson equation
-        phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.sum(rho) - rho)
+        # phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.mean(rho) - rho)
 
         # 4) Compute electric field
         if mesh.boundary_condition == "periodic" and mesh.dim == 1:
-            E1 = (jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
+            # E1 = -(jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
+            E1 = jnp.cumsum(rho - jnp.mean(rho)) * self.eta
             E = jnp.zeros((E1.shape[0], self.v.shape[-1]))
             self.E = E.at[:, 0].set(E1)
         else:
             raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
         
-        # Set training configuration
-        self.training_config = training_config or {
-            "batch_size": 128,
-            "learning_rate": 1e-3,
-            "num_batch_steps": 10,
-            "num_epochs": 10,
-            "abs_tol": 1e-5,
-            "div_mode": "reverse"
-        }
-    
     def step(self, x, v, E, dt):
         """
         Perform a single time step of the simulation.
@@ -240,19 +245,20 @@ class Solver:
         eta = self.eta
         C = self.numerical_constants["C"]
         gamma = self.numerical_constants["gamma"]
+        box_length = self.mesh.box_lengths[0]
         
         # 1. Evaluate electric field at particle positions
-        E_at_particles = evaluate_field_at_particles(x, cells, E, eta)
+        E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
         
-        # 2. Update velocities (Vlasov + Landau collision)
+        # 2. Update velocities (Vlasov + landau collision)
         s = self.score_model(x, v)
-        v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt)
+        v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length)
         
         # 3. Update positions using projected velocities
-        x_new = update_positions(x, v_new, dt)
+        x_new = update_positions(x, v_new, dt, box_length)
         
         # 4. Update electric field on the mesh
-        E_new = update_electric_field(E, cells, x, v, eta, dt)
+        E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
         
         # 5. Train score network
         train_score_model(self.score_model, x_new, v_new, self.training_config)
@@ -261,7 +267,7 @@ class Solver:
     
     def solve(self, final_time, dt):
         """
-        Solve the Maxwell-Vlasov-Landau system using SBTM.
+        Solve the Maxwell-Vlasov-landau system using SBTM.
         
         Args:
             final_time: Final simulation time

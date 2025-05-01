@@ -74,6 +74,7 @@ class Mesh1D(Mesh):
         # Scale by 1/η²
         return Lambda / eta_squared
         
+    # TODO: precompute this
     def cells(self) -> jnp.ndarray:
         """Return a JAX array containing the positions of all cells.
         
