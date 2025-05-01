@@ -41,7 +41,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     
     # Plot 4: Final electric field
     plt.subplot(2, 3, 4)
-    plt.plot(x_cells, solver.E)
+    plt.plot(x_cells, solver.E, label=["E1", "E2"])
     plt.title('Final Electric Field')
     plt.xlabel('Position (x)')
     plt.ylabel('Electric Field (E)')
