@@ -157,8 +157,16 @@ def update_electric_field(E, cells, x, v, eta, dt, box_length):
     return E + dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
 
 @jax.jit
+def compute_electric_field(v, rho, eta):
+    """Compute electric field on the mesh."""
+    E1 = jnp.cumsum(rho - jnp.mean(rho)) * eta
+    E = jnp.zeros((E1.shape[0], v.shape[-1]))
+    return E.at[:, 0].set(E1)
+
+@jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1):
-    return qe * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
+    rho = qe * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
+    return rho
 
 #%%
 class Solver:
@@ -214,7 +222,7 @@ class Solver:
 
         # 2) Compute initial charge density
         qe = self.numerical_constants["qe"]
-        rho = evaluate_charge_density(self.x, mesh.cells(), mesh.eta, box_length, qe=1)
+        rho = evaluate_charge_density(self.x, mesh.cells(), mesh.eta, box_length, qe=qe)
 
         # 3) Solve Poisson equation
         # phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.mean(rho) - rho)

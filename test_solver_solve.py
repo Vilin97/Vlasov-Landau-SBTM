@@ -45,6 +45,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     plt.title('Final Electric Field')
     plt.xlabel('Position (x)')
     plt.ylabel('Electric Field (E)')
+    plt.legend()
     
     # Plot 5: L2 norm of E over time
     plt.subplot(2, 3, 5)
@@ -259,4 +260,3 @@ solver.x, solver.v, solver.E = x, v, E
 
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
-# %%
