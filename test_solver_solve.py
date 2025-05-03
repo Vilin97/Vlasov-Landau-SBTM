@@ -2,7 +2,6 @@
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from flax import nnx
 import os
 import numpy as np
 from tqdm import tqdm
@@ -107,91 +106,6 @@ training_config = {
     "learning_rate": 1e-3,
     "num_batch_steps": 0  # don't train NN when C=0
 }
-
-#%%
-# eta = mesh.eta
-
-# # 1) Sample particle positions and velocities
-# key = jax.random.PRNGKey(seed)
-# x, v = initial_density.sample(key, size=num_particles)
-
-# plt.figure()
-# xs = jnp.linspace(start=0,stop=box_length,num=100).reshape(-1,1)
-# vs = jnp.zeros((100, 2))
-# plt.subplot(3, 1, 1)
-# vals = initial_density(xs, vs)
-# plt.plot(xs, vals / jnp.sum(vals) * box_length, label='density')
-# plt.hist(x, density=True, bins=40, label='sample')
-# plt.legend()
-
-# # 2) Compute initial charge density
-# rho = qe*jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta)))(mesh.cells())
-
-# # 3) Solve Poisson equation
-# phi, info = jax.scipy.sparse.linalg.cg(mesh.laplacian(), jnp.mean(rho) - rho)
-
-# # 4) Compute electric field
-# E1 = -(jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * mesh.eta[0])
-# E = jnp.zeros((E1.shape[0], v.shape[-1]))
-# E = E.at[:, 0].set(E1)
-
-# E_int = jnp.cumsum(rho - jnp.mean(rho)) * eta
-
-# plt.subplot(3, 1, 2)
-# plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
-# plt.plot(mesh.cells(), (jnp.roll(E1, -1) - jnp.roll(E1, 1)) / (2 * eta), label='dE/dx')
-# # plt.plot(mesh.cells(), (E_int - jnp.roll(E_int, 1)) / eta, label='dE`/dx')
-# plt.legend()
-
-# plt.subplot(3, 1, 3)
-# plt.plot(mesh.cells(), E1, label='E')
-# plt.plot(mesh.cells(), E_int, label='E`')
-# plt.legend()
-# plt.show()
-
-# print(f"{x=}")
-# print(f"{rho=}")
-
-# what must E satisfy?
-# 1. dE/dx = rho - mean(rho)
-# 2. E is conservative -- this is always true in 1d
-
-# print((jnp.roll(E1, -1) - jnp.roll(E1, 1)) / (2 * mesh.eta[0]))
-# print(rho - jnp.mean(rho))
-
-#%%
-solver = Solver(
-    mesh=mesh,
-    num_particles=num_particles,
-    initial_density=initial_density,
-    initial_nn=model,
-    numerical_constants=numerical_constants,
-    seed=seed
-)
-
-#%%
-def psi(x: jnp.ndarray, eta: jnp.ndarray, L) -> jnp.ndarray:
-    "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
-    x = jnp.min(x, L - x)
-    return jnp.prod(jnp.maximum(0., 1. - jnp.abs(x) / eta) / eta, axis=-1)
-
-def evaluate_field_at_particles(x, cells, E, eta):
-    """Evaluate electric field at particle positions."""
-    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta)[:, None] * E, axis=0))(x)
-
-def update_electric_field(E, cells, x, v, eta, dt):
-    """Update electric field on the mesh."""
-    kernel_values = psi(cells[:, None] - x[None, :], eta)
-    return E + dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
-
-E1 = solver.E[:,0]
-E_p = evaluate_field_at_particles(solver.x, mesh.cells(), solver.E, mesh.eta)
-x1 = solver.x[:,0]
-indices = jnp.argsort(x1)
-plt.plot(mesh.cells(), E1, label='E at cells')
-plt.plot(x1[indices], E_p[indices, 0], label='E at particles')
-plt.legend()
-plt.show()
 
 #%%
 # Initialize the solver

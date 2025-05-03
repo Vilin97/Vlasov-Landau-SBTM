@@ -267,6 +267,7 @@ class Solver:
         
         # 4. Update electric field on the mesh
         E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
+        # TODO: [explore] instead of solving an ODE for E, recompute it from rho
         
         # 5. Train score network
         train_score_model(self.score_model, x_new, v_new, self.training_config)
