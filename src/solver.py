@@ -154,7 +154,7 @@ def mod(x, box_length):
 def update_electric_field(E, cells, x, v, eta, dt, box_length):
     """Update electric field on the mesh."""
     kernel_values = psi(cells[:, None] - x[None, :], eta, box_length)
-    return E + dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
+    return E - dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
 
 @jax.jit
 def compute_electric_field(v, rho, eta):
@@ -267,7 +267,11 @@ class Solver:
         
         # 4. Update electric field on the mesh
         E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
-        # TODO: [explore] instead of solving an ODE for E, recompute it from rho
+        # qe = self.numerical_constants["qe"]
+        # rho = evaluate_charge_density(x, self.mesh.cells(), self.mesh.eta, box_length, qe=qe)
+        # E1 = jnp.cumsum(rho - jnp.mean(rho)) * self.eta
+        # E_new = jnp.zeros((E1.shape[0], self.v.shape[-1]))
+        # E_new = E_new.at[:, 0].set(E1)
         
         # 5. Train score network
         train_score_model(self.score_model, x_new, v_new, self.training_config)
