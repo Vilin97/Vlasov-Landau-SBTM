@@ -9,7 +9,9 @@ from flax import nnx
 def psi(x: jnp.ndarray, eta: jnp.ndarray, box_length) -> jnp.ndarray:
     "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
     x = mod(x, box_length)
-    return jnp.prod(jnp.maximum(0.0, 1.0 - jnp.abs(x / eta)) / eta, axis=-1)
+    kernel = jnp.maximum(0.0, 1.0 - jnp.abs(x / eta))
+    # kernel = jax.scipy.stats.multivariate_normal.pdf(x / eta, 0, 1)
+    return jnp.prod(kernel / eta, axis=-1)
 
 #%%
 def train_initial_model(model, x, v, initial_density, training_config):
