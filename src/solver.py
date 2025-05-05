@@ -146,10 +146,7 @@ def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length):
 def update_positions(x, v, dt, box_length):
     """Update positions using velocities, modulo box_length."""
     dx = x.shape[-1]
-    if v.shape[-1] == dx:
-        x = x + dt * v
-    else:
-        x = x + dt * v[..., :dx]
+    x = x + dt * v[:, :dx]
     return mod(x, box_length)
 
 @jax.jit
@@ -217,6 +214,7 @@ class Solver:
         else:
             self.eta = jnp.atleast_1d(jnp.asarray(eta))
             assert len(self.eta) == mesh.dim, "eta must have the same dimension as the mesh"
+        assert eta < box_length/2, "eta must be smaller than half the box length"
 
         # 1) Sample particle positions and velocities
         key = jax.random.PRNGKey(seed)

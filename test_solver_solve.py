@@ -86,7 +86,7 @@ numerical_constants={"qe": qe, "C": C, "gamma": gamma}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 128 # small number for debugging
+num_cells = 32 # small number for debugging
 mesh = Mesh1D(box_length, num_cells)
 
 # Create initial density distribution
@@ -96,7 +96,7 @@ initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 model = MLPScoreModel(dx, dv, hidden_dims=(64, ))
 
 # Number of particles for simulation
-num_particles = 10000
+num_particles = 1000
 
 # Define training configuration
 training_config = {
@@ -108,7 +108,7 @@ training_config = {
 }
 
 #%%
-# Initialize the solver
+# SOLVE
 print("Initializing solver...")
 solver = Solver(
     mesh=mesh,
@@ -208,13 +208,9 @@ x_new = update_positions(x, v_new, dt, box_length)
 
 # 4. Update electric field on the mesh
 E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
-# qe = numerical_constants["qe"]
-# rho = evaluate_charge_density(x, mesh.cells(), mesh.eta, box_length, qe=qe)
-# E1 = jnp.cumsum(rho - jnp.mean(rho)) * eta
-# E_new = jnp.zeros((E1.shape[0], v.shape[-1]))
-# E_new = E_new.at[:, 0].set(E1)
 
 #%%
+# 1
 indices = jnp.argsort(x[:, 0])
 E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
 
@@ -223,14 +219,13 @@ plt.plot(x[indices, 0], E_at_particles[indices, 0], label='E particles')
 # plt.plot(cells, E_new[:,0], label='E new')
 plt.legend()
 plt.show()
-# %%
-v_diff = v_new - v
-plt.hist(v_diff[:, 0], label='v1')
-plt.hist(v_diff[:, 1], label='v2')
-plt.legend()
 
 #%%
-from src.solver import mod
-box_length = mesh.box_lengths[0]
-x_diff =  mod(x_new - x, box_length)
-jnp.max(x_diff), jnp.min(x_diff), jnp.mean(x_diff), jnp.std(x_diff)
+# 2+3
+jnp.min(x_new - (x + dt * v_new[:, :dx]) % box_length)
+
+#%%
+
+kernel_values = psi(cells[:, None] - x[None, :], eta, box_length)
+jnp.sum(kernel_values>0)
+E - dt * jnp.mean(kernel_values[:, :, None] * v, axis=1)
