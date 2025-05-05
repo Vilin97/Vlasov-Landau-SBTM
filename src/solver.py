@@ -1,14 +1,20 @@
 #%%
 import jax
 import jax.numpy as jnp
+from jax.numpy import mod
 from src.loss import explicit_score_matching_loss, implicit_score_matching_loss
 import optax
 from flax import nnx
 
 @jax.jit
+def centered_mod(x, L):
+    "centered_mod(x, L) in [-L/2, L/2]"
+    return (x + L/2) % L - L/2
+
+@jax.jit
 def psi(x: jnp.ndarray, eta: jnp.ndarray, box_length) -> jnp.ndarray:
     "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
-    x = mod(x, box_length)
+    x = centered_mod(x, box_length)
     kernel = jnp.maximum(0.0, 1.0 - jnp.abs(x / eta))
     # kernel = jax.scipy.stats.multivariate_normal.pdf(x / eta, 0, 1)
     return jnp.prod(kernel / eta, axis=-1)
@@ -145,12 +151,6 @@ def update_positions(x, v, dt, box_length):
     else:
         x = x + dt * v[..., :dx]
     return mod(x, box_length)
-
-@jax.jit
-def mod(x, box_length):
-    "compute x modulo box_length"
-    mask = 1. * (x < 0) - 1 * (x > box_length)
-    return x + mask * box_length
 
 @jax.jit
 def update_electric_field(E, cells, x, v, eta, dt, box_length):
