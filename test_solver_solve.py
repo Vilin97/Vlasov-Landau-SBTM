@@ -204,15 +204,6 @@ cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[2], label='Density')
 
 plt.tight_layout()
 plt.show()
-#%%
-x = solver.x
-rho = evaluate_charge_density(x, mesh.cells(), mesh.eta, box_length, qe=qe)
-E1 = jnp.cumsum(rho - jnp.mean(rho)) * mesh.eta
-plt.plot(mesh.cells(), E1, label='E1')
-plt.plot(mesh.cells(), (jnp.roll(E1, 0) - jnp.roll(E1, 1)) / mesh.eta, label='dE/dx')
-plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
-plt.legend()
-plt.show()
 
 # %%
 # time step
@@ -247,7 +238,8 @@ v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length
 x_new = update_positions(x, v_new, dt, box_length)
 
 # 4. Update electric field on the mesh
-E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
+rho = evaluate_charge_density(x, cells, mesh.eta, box_length, qe=qe)
+E1 = jnp.cumsum(rho - jnp.mean(rho)) * eta
 
 #%%
 # 1
