@@ -78,7 +78,7 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 2       # Velocity dimension (as requested)
+dv = 1       # Velocity dimension
 gamma = -dv
 C = 0.
 qe = 1.
@@ -86,7 +86,7 @@ numerical_constants={"qe": qe, "C": C, "gamma": gamma}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 32 # small number for debugging
+num_cells = 128 # small number for debugging
 mesh = Mesh1D(box_length, num_cells)
 
 # Create initial density distribution
@@ -96,7 +96,7 @@ initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 model = MLPScoreModel(dx, dv, hidden_dims=(64, ))
 
 # Number of particles for simulation
-num_particles = 1000
+num_particles = 100000
 
 # Define training configuration
 training_config = {
@@ -109,7 +109,7 @@ training_config = {
 
 #%%
 # SOLVE
-print("Initializing solver...")
+print(f"N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
 solver = Solver(
     mesh=mesh,
     num_particles=num_particles,
@@ -118,6 +118,7 @@ solver = Solver(
     numerical_constants=numerical_constants,
     seed=seed
 )
+x0, v0, E0 = solver.x, solver.v, solver.E
 
 box_length = mesh.box_lengths[0]
 rho = qe*jax.vmap(lambda cell: jnp.mean(psi(solver.x - cell, solver.eta, box_length)))(mesh.cells())
@@ -132,12 +133,11 @@ plt.show()
 solver.training_config = training_config
 
 # Train the initial model
-print("Training initial model...")
 train_initial_model(model, solver.x, solver.v, initial_density, training_config)
 
 # Simulation parameters
-final_time = 10.0
-dt = 0.02
+final_time = 10.0 # set to 10 later
+dt = 0.1
 num_steps = int(final_time / dt)
 
 # Arrays to store metrics over time
@@ -151,7 +151,7 @@ e_l2_norms[0] = jnp.sqrt((jnp.sum(solver.E**2) * solver.eta))[0]
 print("Running simulation...")
 x, v, E = solver.x, solver.v, solver.E
 
-for step in range(num_steps):
+for step in tqdm(range(num_steps), desc="Solving"):
     # Perform a single time step
     x, v, E = solver.step(x, v, E, dt)
     
@@ -159,15 +159,12 @@ for step in range(num_steps):
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
     
     # Print progress
-    if (step+1) % 10 == 0:
+    if step % 20 == 0:
         print(f"Completed step {step+1}/{num_steps}, L2 norm of E: {e_l2_norms[step+1]:.6f}")
-    # if (step+1) % 50 == 0:
-plt.plot(times[:step], e_l2_norms[:step])
-# plt.yscale('log')
-plt.title('L2 Norm of Electric Field')
-plt.xlabel('Time')
-plt.ylabel('||E||_2')
-plt.show()
+        plt.plot(mesh.cells(), E[:,0], label='E1')
+        # plt.plot(mesh.cells(), E[:,1], label='E2')
+        plt.legend()
+        plt.show()
 
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
@@ -175,7 +172,50 @@ solver.x, solver.v, solver.E = x, v, E
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
 
+#%%
+import seaborn as sns
+fig, axs = plt.subplots(1, 3, figsize=(20, 6))
+
+# Plot L2 norm of E over time
+axs[0].plot(times, e_l2_norms, label='L2 norm of E')
+axs[0].set_xlabel('Time')
+axs[0].set_ylabel('||E||_2')
+axs[0].set_title('L2 Norm of Electric Field')
+axs[0].set_yscale('log')
+axs[0].legend()
+
+# Initial phase space KDE
+kde1 = sns.kdeplot(
+    x=x0[:, 0], y=v0[:, 0], fill=True, cmap='viridis', ax=axs[1], bw_adjust=0.5, levels=100, thresh=0.05
+)
+axs[1].set_xlabel('Position (x)')
+axs[1].set_ylabel('Velocity (v1)')
+axs[1].set_title(f'Initial Phase Space Density (KDE), t=0')
+cbar1 = plt.colorbar(kde1.get_children()[0], ax=axs[1], label='Density')
+
+# Final phase space KDE
+kde2 = sns.kdeplot(
+    x=solver.x[:, 0], y=solver.v[:, 0], fill=True, cmap='viridis', ax=axs[2], bw_adjust=0.5, levels=100, thresh=0.05
+)
+axs[2].set_xlabel('Position (x)')
+axs[2].set_ylabel('Velocity (v1)')
+axs[2].set_title(f'Final Phase Space Density (KDE), t={times[-1]:.2f}')
+cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[2], label='Density')
+
+plt.tight_layout()
+plt.show()
+#%%
+x = solver.x
+rho = evaluate_charge_density(x, mesh.cells(), mesh.eta, box_length, qe=qe)
+E1 = jnp.cumsum(rho - jnp.mean(rho)) * mesh.eta
+plt.plot(mesh.cells(), E1, label='E1')
+plt.plot(mesh.cells(), (jnp.roll(E1, 0) - jnp.roll(E1, 1)) / mesh.eta, label='dE/dx')
+plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
+plt.legend()
+plt.show()
+
 # %%
+# time step
 from src.solver import evaluate_field_at_particles, update_velocities, update_positions, update_electric_field
 import matplotlib.pyplot as plt
 dt = 0.02
@@ -207,16 +247,17 @@ v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length
 x_new = update_positions(x, v_new, dt, box_length)
 
 # 4. Update electric field on the mesh
-E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
+E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
 
 #%%
 # 1
 indices = jnp.argsort(x[:, 0])
 E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
 
-plt.plot(cells, E[:,0], label='E cells')
-plt.plot(x[indices, 0], E_at_particles[indices, 0], label='E particles')
-# plt.plot(cells, E_new[:,0], label='E new')
+plt.plot(cells, E[:,0], label='E0 cells')
+plt.plot(x[indices, 0], E_at_particles[indices, 0], label='E0 particles')
+plt.plot(cells, E_new[:,0], label='E0 new')
+plt.plot(cells, E_new[:,1], label='E1 new')
 plt.legend()
 plt.show()
 

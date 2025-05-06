@@ -214,7 +214,7 @@ class Solver:
         else:
             self.eta = jnp.atleast_1d(jnp.asarray(eta))
             assert len(self.eta) == mesh.dim, "eta must have the same dimension as the mesh"
-        assert eta < box_length/2, "eta must be smaller than half the box length"
+        assert mesh.eta < box_length/2, "eta must be smaller than half the box length"
 
         # 1) Sample particle positions and velocities
         key = jax.random.PRNGKey(seed)
@@ -266,12 +266,12 @@ class Solver:
         x_new = update_positions(x, v_new, dt, box_length)
         
         # 4. Update electric field on the mesh
-        E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
-        # qe = self.numerical_constants["qe"]
-        # rho = evaluate_charge_density(x, self.mesh.cells(), self.mesh.eta, box_length, qe=qe)
-        # E1 = jnp.cumsum(rho - jnp.mean(rho)) * self.eta
-        # E_new = jnp.zeros((E1.shape[0], self.v.shape[-1]))
-        # E_new = E_new.at[:, 0].set(E1)
+        # E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
+        qe = self.numerical_constants["qe"]
+        rho = evaluate_charge_density(x, self.mesh.cells(), self.mesh.eta, box_length, qe=qe)
+        E1 = jnp.cumsum(rho - jnp.mean(rho)) * self.eta
+        E_new = jnp.zeros((E1.shape[0], self.v.shape[-1]))
+        E_new = E_new.at[:, 0].set(E1)
         
         # 5. Train score network
         train_score_model(self.score_model, x_new, v_new, self.training_config)
