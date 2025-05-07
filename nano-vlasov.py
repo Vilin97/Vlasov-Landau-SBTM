@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import seaborn as sns
 
 def rejection_sample(key, density_fn, domain, max_value, num_samples=1):
     "sample in parallel"
@@ -46,7 +47,7 @@ def evaluate_field_at_particles(x, cells, E, eta, box_length):
 
 @jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1):
-    rho = qe * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
+    rho = qe * box_length * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
     return rho
 
 # Visualize initial data
@@ -91,7 +92,7 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 1       # Velocity dimension
+dv = 2       # Velocity dimension
 
 # set number of particles
 num_particles = 1_000_000
@@ -104,7 +105,7 @@ cells = (jnp.arange(num_cells) + 0.5) * eta
 
 # sample initial velocity
 key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv)).reshape(-1)
+v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
 
 # Sample initial positions with rejection sampling
 def spatial_density(x):
@@ -118,7 +119,9 @@ rho = evaluate_charge_density(x, cells, eta, box_length)
 E = jnp.cumsum(rho - jnp.mean(rho)) * eta
 
 # Visualize
-visualize_initial(x, v, cells, E, rho, eta, box_length)
+visualize_initial(x, v[:,0], cells, E, rho, eta, box_length)
+
+x0, v0, E0, rho0 = x, v, E, rho
 
 #%%
 "Time stepping"
@@ -138,10 +141,11 @@ def plot_intermediate(x, v, E, rho, cells, t):
     plt.suptitle(f't = {t :.2f}')
     plt.show()
 
+@jax.jit
 def step(x, v, E, cells, eta, dt, box_length):
     E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
-    v_new = v + dt * E_at_particles
-    x_new = jnp.mod(x + dt * v_new, box_length)
+    v_new = v.at[:, 0].add(dt * E_at_particles)
+    x_new = jnp.mod(x + dt * v_new[:, 0], box_length)
 
     rho = evaluate_charge_density(x_new, cells, eta, box_length)
     E_new = jnp.cumsum(rho - jnp.mean(rho)) * eta
@@ -159,21 +163,61 @@ for step_num in tqdm(range(num_steps)):
     t += dt
 
     if step_num % max(1, num_steps // 10) == 0:
-        plot_intermediate(x, v, E, rho, cells, t)
+        plot_intermediate(x, v[:,0], E, rho, cells, t)
     E_L2.append(jnp.sqrt(jnp.sum(E**2) * eta))
 
 #%%
 "Plot L2 norm of E over time"
 
 plt.figure(figsize=(6,4))
-plt.plot(jnp.linspace(0, final_time, num_steps+1), E_L2, marker='o', markersize=3)
+plt.plot(jnp.linspace(0, final_time, num_steps+1), E_L2, marker='o', markersize=3, label='Simulation')
+
+# Predicted curve
+t_grid = jnp.linspace(0, final_time, num_steps+1)
+prefactor = - 1/(k**3) * jnp.sqrt(jnp.pi/8) * jnp.exp(-1/(2*k**2) - 1.5)
+predicted = jnp.exp(t_grid * prefactor)
+predicted *= E_L2[0]/predicted[0]
+gamma = prefactor
+plt.plot(t_grid, predicted, 'r--', label=fr'$e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
+
 plt.xlabel('Time')
 plt.ylabel(r'$||E||_{L^2}$')
 plt.title(r'L2 norm of $E$ vs Time')
 plt.yscale('log')
 plt.grid(True)
+plt.legend()
 plt.tight_layout()
 plt.show()
 
 
+# %%
+# Downsample for plotting
+num_plot = 50_000
+key_plot = jrandom.PRNGKey(123)
+idx0 = jrandom.choice(key_plot, x0.shape[0], shape=(num_plot,), replace=False)
+idx = jrandom.choice(jrandom.PRNGKey(456), x.shape[0], shape=(num_plot,), replace=False)
+
+# Downsampled particles for plotting
+x0_plot = x0[idx0]
+v0_plot = v0[idx0]
+x_plot = x[idx]
+v_plot = v[idx]
+
+fig, axs = plt.subplots(1, 2, figsize=(14, 5))
+# Initial phase space KDE
+kde1 = sns.kdeplot(x=x0_plot, y=v0_plot[:,0], fill=True, cmap='viridis', ax=axs[0], bw_adjust=0.5, levels=100, thresh=0.05)
+axs[0].set_xlabel('Position (x)')
+axs[0].set_ylabel('Velocity (v)')
+axs[0].set_title('Initial Phase Space Density (KDE), t=0')
+cbar1 = plt.colorbar(kde1.get_children()[0], ax=axs[0], label='Density')
+
+# Final phase space KDE
+kde2 = sns.kdeplot(x=x_plot, y=v_plot[:,0], fill=True, cmap='viridis', ax=axs[1], bw_adjust=0.5, levels=100, thresh=0.05)
+axs[1].set_xlabel('Position (x)')
+axs[1].set_ylabel('Velocity (v)')
+axs[1].set_title(f'Final Phase Space Density (KDE), t={final_time:.2f}')
+cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[1], label='Density')
+
+plt.tight_layout()
+plt.show()
 # %%
