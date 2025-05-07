@@ -164,7 +164,8 @@ def compute_electric_field(v, rho, eta):
 
 @jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1):
-    rho = qe * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
+    dx = x.shape[-1]
+    rho = qe * (box_length**dx) * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
     return rho
 
 #%%
