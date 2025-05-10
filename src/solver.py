@@ -119,7 +119,7 @@ def A(z, C, gamma):
     return factor * (jnp.eye(z.shape[0]) * z_norm**2 - jnp.outer(z, z))
 
 @partial(jax.jit, static_argnums=6)
-def collision_hat_local(x, v, s, eta, C, gamma, num_cells, box_length):
+def collision(x, v, s, eta, C, gamma, num_cells, box_length):
     """
     Q_i = (1/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
           with the linear-hat kernel ψ of width η, periodic on [0,L].
