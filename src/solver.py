@@ -12,12 +12,11 @@ def centered_mod(x, L):
     return (x + L/2) % L - L/2
 
 @jax.jit
-def psi(x: jnp.ndarray, eta: jnp.ndarray, box_length) -> jnp.ndarray:
-    "psi_eta(x) = prod_i G(x_i/eta_i) / eta_i, where G(x) = max(0, 1-|x|)."
+def psi(x, eta, box_length):
+    "psi_eta(x) = max(0, 1-|x|/eta) / eta."
     x = centered_mod(x, box_length)
     kernel = jnp.maximum(0.0, 1.0 - jnp.abs(x / eta))
-    # kernel = jax.scipy.stats.multivariate_normal.pdf(x / eta, 0, 1)
-    return jnp.prod(kernel / eta, axis=-1)
+    return kernel / eta
 
 #%%
 def train_initial_model(model, x, v, initial_density, training_config):
@@ -130,11 +129,74 @@ def collision(x, v, s, eta, C, gamma, box_length):
         return jnp.mean(collision_terms, axis=0)
     return jax.vmap(compute_single_collision)(x, v, s)
 
-# TODO: [speed] since cells are eta apart, the array psi(x_i - cells, eta) has *exactly* 2 non-zero entries
+@jax.jit
+def evaluate_charge_density_general(x, cells, eta, box_length, qe=1):
+    rho = qe * box_length * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
+    return rho
+
+@jax.jit
+def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
+    """
+    ρ_j = qe * box_length * ⟨ψ(x − cell_j)⟩   with ψ the same hat kernel.
+    O(N) scatter-add instead of vmap over cells.
+    """
+    M      = cells.size
+    idx_f  = x / eta - 0.5
+    i0     = jnp.floor(idx_f).astype(jnp.int32) % M
+    f      = idx_f - jnp.floor(idx_f)
+    i1     = (i0 + 1) % M
+    w0, w1 = 1.0 - f, f
+
+    counts = (
+        jnp.zeros(M)
+          .at[i0].add(w0)
+          .at[i1].add(w1)
+    )
+    return qe * box_length * counts / (x.size * eta)
+
+@jax.jit
+def evaluate_field_at_particles_general(x, cells, E, eta, box_length):
+    """Evaluate electric field at particle positions."""
+    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta, box_length) * E, axis=0))(x)
+
 @jax.jit
 def evaluate_field_at_particles(x, cells, E, eta, box_length):
-    """Evaluate electric field at particle positions."""
-    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta, box_length)[:, None] * E, axis=0))(x)
+    """
+    eta * Σ_j ψ(x_i − cell_j) E_j   (linear-hat kernel, periodic)
+    Now O(N): two-point linear interpolation of E instead of a full sum.
+    """
+    M      = cells.size
+    idx_f  = x / eta - 0.5
+    i0     = jnp.floor(idx_f).astype(jnp.int32) % M
+    f      = idx_f - jnp.floor(idx_f)
+    i1     = (i0 + 1) % M
+    return (1.0 - f) * E[i0] + f * E[i1]
+
+@jax.jit
+def update_electric_field_general(E, cells, x, v, eta, dt, box_length):
+    """Works with any kernel."""
+    return E - dt * box_length * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length) * v[:, 0]))(cells)
+
+@jax.jit
+def update_electric_field(E, cells, x, v, eta, dt, box_length):
+    """Works only with the triangular kernel."""
+    M = cells.size
+    idx_f = x / eta - 0.5
+    i0    = jnp.floor(idx_f).astype(jnp.int32) % M
+    f     = idx_f - jnp.floor(idx_f)
+    i1    = (i0 + 1) % M
+    w0, w1 = 1.0 - f, f
+    J = (jnp.zeros(M)
+          .at[i0].add(w0 * v[:, 0])
+          .at[i1].add(w1 * v[:, 0])
+        / (x.size * eta))
+    return (E - dt * box_length * J).astype(E.dtype)
+
+@jax.jit
+def compute_electric_field(rho, eta):
+    """Compute electric field on the mesh."""
+    E = jnp.cumsum(rho - jnp.mean(rho)) * eta
+    return E
 
 @jax.jit
 def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length):
@@ -148,25 +210,6 @@ def update_positions(x, v, dt, box_length):
     dx = x.shape[-1]
     x = x + dt * v[:, :dx]
     return mod(x, box_length)
-
-@jax.jit
-def update_electric_field(E, cells, x, v, eta, dt, box_length):
-    """Update electric field on the mesh."""
-    kernel_values = psi(cells[:, None] - x[None, :], eta, box_length)
-    return E - dt * jnp.mean(kernel_values[:, :, None] * v, axis=1).reshape(E.shape)
-
-@jax.jit
-def compute_electric_field(v, rho, eta):
-    """Compute electric field on the mesh."""
-    E1 = jnp.cumsum(rho - jnp.mean(rho)) * eta
-    E = jnp.zeros((E1.shape[0], v.shape[-1]))
-    return E.at[:, 0].set(E1)
-
-@jax.jit
-def evaluate_charge_density(x, cells, eta, box_length, qe=1):
-    dx = x.shape[-1]
-    rho = qe * (box_length**dx) * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
-    return rho
 
 #%%
 class Solver:
@@ -225,17 +268,8 @@ class Solver:
         qe = self.numerical_constants["qe"]
         rho = evaluate_charge_density(self.x, mesh.cells(), mesh.eta, box_length, qe=qe)
 
-        # 3) Solve Poisson equation
-        # phi, info = jax.scipy.sparse.linalg.cg(self.mesh.laplacian(), jnp.mean(rho) - rho)
-
-        # 4) Compute electric field
-        if mesh.boundary_condition == "periodic" and mesh.dim == 1:
-            # E1 = -(jnp.roll(phi, -1) - jnp.roll(phi, 1)) / (2 * self.mesh.eta[0])
-            E1 = jnp.cumsum(rho - jnp.mean(rho)) * self.eta
-            E = jnp.zeros((E1.shape[0], self.v.shape[-1]))
-            self.E = E.at[:, 0].set(E1)
-        else:
-            raise NotImplementedError("Non-periodic boundary conditions are not implemented.")
+        # 3) Compute electric field
+        self.E = compute_electric_field(rho, self.eta)
         
     def step(self, x, v, E, dt):
         """

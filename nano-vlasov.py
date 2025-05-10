@@ -29,26 +29,57 @@ def rejection_sample(key, density_fn, domain, max_value, num_samples=1):
     return samples[:num_samples]
 
 @jax.jit
-def centered_mod(x, L):
-    "centered_mod(x, L) in [-L/2, L/2]"
-    return (x + L/2) % L - L/2
+def update_electric_field(E, cells, x, v, eta, dt, box_length):
+    M = cells.size
 
-@jax.jit
-def psi(x, eta, box_length):
-    "psi_eta(x) = max(0, 1-|x|/eta) / eta."
-    x = centered_mod(x, box_length)
-    kernel = jnp.maximum(0.0, 1.0 - jnp.abs(x / eta))
-    return kernel / eta
+    idx_f = x / eta - 0.5
+    i0    = jnp.floor(idx_f).astype(jnp.int32) % M
+    f     = idx_f - jnp.floor(idx_f)
+    i1    = (i0 + 1) % M
+    w0, w1 = 1.0 - f, f
+
+    J = (
+        jnp.zeros(M)
+          .at[i0].add(w0 * v[:, 0])
+          .at[i1].add(w1 * v[:, 0])
+        / (x.size * eta)
+    )
+
+    return (E - dt * box_length * J).astype(E.dtype)
 
 @jax.jit
 def evaluate_field_at_particles(x, cells, E, eta, box_length):
-    """Evaluate electric field at particle positions."""
-    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta, box_length) * E, axis=0))(x)
+    """
+    eta * Σ_j ψ(x_i − cell_j) E_j   (linear-hat kernel, periodic)
+    Now O(N): two-point linear interpolation of E instead of a full sum.
+    """
+    M      = cells.size
+    idx_f  = x / eta - 0.5
+    i0     = jnp.floor(idx_f).astype(jnp.int32) % M
+    f      = idx_f - jnp.floor(idx_f)
+    i1     = (i0 + 1) % M
+    return (1.0 - f) * E[i0] + f * E[i1]
 
 @jax.jit
-def evaluate_charge_density(x, cells, eta, box_length, qe=1):
-    rho = qe * box_length * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
-    return rho
+def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
+    """
+    ρ_j = qe * box_length * ⟨ψ(x − cell_j)⟩   with ψ the same hat kernel.
+    O(N) scatter-add instead of vmap over cells.
+    """
+    M      = cells.size
+    idx_f  = x / eta - 0.5
+    i0     = jnp.floor(idx_f).astype(jnp.int32) % M
+    f      = idx_f - jnp.floor(idx_f)
+    i1     = (i0 + 1) % M
+    w0, w1 = 1.0 - f, f
+
+    counts = (
+        jnp.zeros(M)
+          .at[i0].add(w0)
+          .at[i1].add(w1)
+    )
+    return qe * box_length * counts / (x.size * eta)
+
 
 # Visualize initial data
 def visualize_initial(x, v, cells, E, rho, eta, box_length):
@@ -147,6 +178,7 @@ def step(x, v, E, cells, eta, dt, box_length):
     v_new = v.at[:, 0].add(dt * E_at_particles)
     x_new = jnp.mod(x + dt * v_new[:, 0], box_length)
 
+    # E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
     rho = evaluate_charge_density(x_new, cells, eta, box_length)
     E_new = jnp.cumsum(rho - jnp.mean(rho)) * eta
 
@@ -192,7 +224,7 @@ plt.show()
 
 # %%
 # Downsample for plotting
-num_plot = 50_000
+num_plot = 20_000
 key_plot = jrandom.PRNGKey(123)
 idx0 = jrandom.choice(key_plot, x0.shape[0], shape=(num_plot,), replace=False)
 idx = jrandom.choice(jrandom.PRNGKey(456), x.shape[0], shape=(num_plot,), replace=False)
