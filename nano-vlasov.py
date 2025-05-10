@@ -126,7 +126,7 @@ dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 
 # set number of particles
-num_particles = 1_000_0
+num_particles = 1_000_00
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
@@ -364,16 +364,16 @@ C = 1.0
 gamma = -3
 num_cells = int(box_length / eta)         # same grid you already use
 a = collision_hat_local(x, v, s, eta, C, gamma, num_cells, box_length)
-b = collision(x, v, s, eta, C, gamma, box_length)
+# b = collision(x, v, s, eta, C, gamma, box_length)
 
 # Time both computations and block until ready, loop 100 times
-num_loops = 100
+num_loops = 10
 
 # Warm up JIT
 a = collision_hat_local(x, v, s, eta, C, gamma, num_cells, box_length)
-b = collision(x, v, s, eta, C, gamma, box_length)
+# b = collision(x, v, s, eta, C, gamma, box_length)
 jax.block_until_ready(a)
-jax.block_until_ready(b)
+# jax.block_until_ready(b)
 
 # Time collision_hat_local
 start_a = time.time()
@@ -382,14 +382,14 @@ for _ in range(num_loops):
 jax.block_until_ready(a)
 end_a = time.time()
 
-# Time collision (naive)
-start_b = time.time()
-for _ in range(num_loops):
-    b = collision(x, v, s, eta, C, gamma, box_length)
-jax.block_until_ready(b)
-end_b = time.time()
+# # Time collision (naive)
+# start_b = time.time()
+# for _ in range(num_loops):
+#     b = collision(x, v, s, eta, C, gamma, box_length)
+# jax.block_until_ready(b)
+# end_b = time.time()
 
 print(f"collision_hat_local time (avg over {num_loops}): {(end_a - start_a)/num_loops:.4f} s")
-print(f"collision (naive) time (avg over {num_loops}):    {(end_b - start_b)/num_loops:.4f} s")
+# print(f"collision (naive) time (avg over {num_loops}):    {(end_b - start_b)/num_loops:.4f} s")
 
 # %%
