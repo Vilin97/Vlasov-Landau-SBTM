@@ -5,6 +5,8 @@ from jax.numpy import mod
 from src.loss import explicit_score_matching_loss, implicit_score_matching_loss
 import optax
 from flax import nnx
+from functools import partial
+import jax.lax as lax
 
 @jax.jit
 def centered_mod(x, L):
@@ -111,23 +113,63 @@ def opt_step(model, optimizer, loss, batch, key=None):
 
 @jax.jit
 def A(z, C, gamma):
-    "Collision kernel A(z) = C|z|^(γ)(I_d|z|^2 - z⊗z)"
-    z_norm = jnp.linalg.norm(z)
-    z_norm_safe = jnp.maximum(z_norm, 1e-10)
-    z_norm_pow = z_norm_safe ** gamma
-    z_outer = jnp.outer(z, z)
-    I_scaled = jnp.eye(z.shape[0]) * (z_norm ** 2)
-    return C * z_norm_pow * (I_scaled - z_outer)
+    """A(z) = C |z|^gamma (|z|² I_d − z⊗z)."""
+    z_norm  = jnp.linalg.norm(z) + 1e-10
+    factor  = C * z_norm ** gamma
+    return factor * (jnp.eye(z.shape[0]) * z_norm**2 - jnp.outer(z, z))
 
-@jax.jit
-def collision(x, v, s, eta, C, gamma, box_length):
-    "Collision operator Q(f,f) = ¹⁄ₙ ∑ ψ(x[p] - x[q]) A(v[p] - v[q]) * (s[p] - s[q])"
-    def compute_single_collision(xp, vp, sp):
-        collision_terms = jax.vmap(
-            lambda xq, vq, sq: psi(xp - xq, eta, box_length) * jnp.dot(A(vp - vq, C, gamma), (sp - sq))
-        )(x, v, s)
-        return jnp.mean(collision_terms, axis=0)
-    return jax.vmap(compute_single_collision)(x, v, s)
+@partial(jax.jit, static_argnums=6)
+def collision_hat_local(x, v, s, eta, C, gamma, num_cells, box_length):
+    """
+    Q_i = (1/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
+          with the linear-hat kernel ψ of width η, periodic on [0,L].
+
+    Complexity O(N η/L)  (exact for the hat kernel).
+    """
+    N, d = v.shape
+    M    = num_cells
+
+    # ---- bin & sort particles by cell --------------------------------------
+    idx    = jnp.floor(x / eta).astype(jnp.int32) % M
+    order  = jnp.argsort(idx)
+    x_s, v_s, s_s, idx_s = x[order], v[order], s[order], idx[order]
+
+    counts   = jnp.bincount(idx_s, length=M)
+    cell_ofs = jnp.cumsum(jnp.concatenate([jnp.array([0]), counts[:-1]]))
+
+    # ---- per-particle collision using lax.fori_loop (no dynamic slicing) ---
+    def Q_single(i):
+        xi, vi, si = x_s[i], v_s[i], s_s[i]
+        cell       = idx_s[i]
+        Q_i        = jnp.zeros(d)
+
+        def loop_over_cell(c, acc):
+            start = cell_ofs[c]
+            end   = start + counts[c]
+
+            def loop_over_particles(j, inner_acc):
+                xj, vj, sj = x_s[j], v_s[j], s_s[j]
+                w  = psi(xi - xj, eta, box_length)
+                dv = vi - vj
+                ds = si - sj
+                inner_acc += w * jnp.dot(A(dv, C, gamma), ds)
+                return inner_acc
+
+            acc = lax.fori_loop(start, end, loop_over_particles, acc)
+            return acc
+
+        # neighbour cells that overlap the hat (periodic)
+        for c in ((cell - 1) % M, cell, (cell + 1) % M):
+            Q_i = loop_over_cell(c, Q_i)
+
+        return Q_i / N
+
+    Q_sorted = jax.vmap(Q_single)(jnp.arange(N))
+
+    # ---- unsort back to original particle order ----------------------------
+    rev = jnp.empty_like(order)
+    rev = rev.at[order].set(jnp.arange(N))
+    return Q_sorted[rev]
 
 @jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
