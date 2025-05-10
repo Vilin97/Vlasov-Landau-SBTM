@@ -130,11 +130,6 @@ def collision(x, v, s, eta, C, gamma, box_length):
     return jax.vmap(compute_single_collision)(x, v, s)
 
 @jax.jit
-def evaluate_charge_density_general(x, cells, eta, box_length, qe=1):
-    rho = qe * box_length * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length)))(cells)
-    return rho
-
-@jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
     """
     ρ_j = qe * box_length * ⟨ψ(x − cell_j)⟩   with ψ the same hat kernel.
@@ -155,11 +150,6 @@ def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
     return qe * box_length * counts / (x.size * eta)
 
 @jax.jit
-def evaluate_field_at_particles_general(x, cells, E, eta, box_length):
-    """Evaluate electric field at particle positions."""
-    return jax.vmap(lambda x_i: eta * jnp.sum(psi(x_i - cells, eta, box_length) * E, axis=0))(x)
-
-@jax.jit
 def evaluate_field_at_particles(x, cells, E, eta, box_length):
     """
     eta * Σ_j ψ(x_i − cell_j) E_j   (linear-hat kernel, periodic)
@@ -171,11 +161,6 @@ def evaluate_field_at_particles(x, cells, E, eta, box_length):
     f      = idx_f - jnp.floor(idx_f)
     i1     = (i0 + 1) % M
     return (1.0 - f) * E[i0] + f * E[i1]
-
-@jax.jit
-def update_electric_field_general(E, cells, x, v, eta, dt, box_length):
-    """Works with any kernel."""
-    return E - dt * box_length * jax.vmap(lambda cell: jnp.mean(psi(x - cell, eta, box_length) * v[:, 0]))(cells)
 
 @jax.jit
 def update_electric_field(E, cells, x, v, eta, dt, box_length):
