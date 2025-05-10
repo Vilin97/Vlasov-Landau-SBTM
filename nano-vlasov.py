@@ -223,6 +223,8 @@ plt.show()
 
 
 # %%
+"Plot phase space heatmap"
+
 # Downsample for plotting
 num_plot = 20_000
 key_plot = jrandom.PRNGKey(123)
@@ -252,4 +254,3 @@ cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[1], label='Density')
 
 plt.tight_layout()
 plt.show()
-# %%
