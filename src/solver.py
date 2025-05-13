@@ -118,14 +118,15 @@ def A(z, C, gamma):
     factor  = C * z_norm ** gamma
     return factor * (jnp.eye(z.shape[0]) * z_norm**2 - jnp.outer(z, z))
 
-@partial(jax.jit, static_argnums=6)
-def collision(x, v, s, eta, C, gamma, num_cells, box_length):
+@partial(jax.jit, static_argnums=7)
+def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     """
     Q_i = (1/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
           with the linear-hat kernel ψ of width η, periodic on [0,L].
 
     Complexity O(N η/L)  (exact for the hat kernel).
     """
+    x = x[:,0]
     N, d = v.shape
     M    = num_cells
 
@@ -177,6 +178,7 @@ def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
     ρ_j = qe * box_length * ⟨ψ(x − cell_j)⟩   with ψ the same hat kernel.
     O(N) scatter-add instead of vmap over cells.
     """
+    x = x[:,0]
     M      = cells.size
     idx_f  = x / eta - 0.5
     i0     = jnp.floor(idx_f).astype(jnp.int32) % M
@@ -197,6 +199,7 @@ def evaluate_field_at_particles(x, cells, E, eta, box_length):
     eta * Σ_j ψ(x_i − cell_j) E_j   (linear-hat kernel, periodic)
     Now O(N): two-point linear interpolation of E instead of a full sum.
     """
+    x = x[:,0]
     M      = cells.size
     idx_f  = x / eta - 0.5
     i0     = jnp.floor(idx_f).astype(jnp.int32) % M
@@ -207,6 +210,7 @@ def evaluate_field_at_particles(x, cells, E, eta, box_length):
 @jax.jit
 def update_electric_field(E, cells, x, v, eta, dt, box_length):
     """Works only with the triangular kernel."""
+    x = x[:,0]
     M = cells.size
     idx_f = x / eta - 0.5
     i0    = jnp.floor(idx_f).astype(jnp.int32) % M
@@ -225,10 +229,10 @@ def compute_electric_field(rho, eta):
     E = jnp.cumsum(rho - jnp.mean(rho)) * eta
     return E
 
-@jax.jit
-def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length):
+@partial(jax.jit, static_argnums=9)
+def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells):
     """Update velocities using electric field and collision term."""
-    collision_term = collision(x, v, s, eta, C, gamma, box_length)
+    collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
     return v + dt * (E_at_particles - collision_term)
 
 @jax.jit
@@ -312,6 +316,7 @@ class Solver:
             Updated particle positions, velocities, and electric field
         """
         cells = self.mesh.cells()
+        num_cells = cells.size
         eta = self.eta
         C = self.numerical_constants["C"]
         gamma = self.numerical_constants["gamma"]
@@ -322,18 +327,13 @@ class Solver:
         
         # 2. Update velocities (Vlasov + landau collision)
         s = self.score_model(x, v)
-        v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length)
+        v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells)
         
         # 3. Update positions using projected velocities
         x_new = update_positions(x, v_new, dt, box_length)
         
         # 4. Update electric field on the mesh
-        # E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
-        qe = self.numerical_constants["qe"]
-        rho = evaluate_charge_density(x, self.mesh.cells(), self.mesh.eta, box_length, qe=qe)
-        E1 = jnp.cumsum(rho - jnp.mean(rho)) * self.eta
-        E_new = jnp.zeros((E1.shape[0], self.v.shape[-1]))
-        E_new = E_new.at[:, 0].set(E1)
+        E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
         
         # 5. Train score network
         train_score_model(self.score_model, x_new, v_new, self.training_config)

@@ -96,7 +96,7 @@ initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 model = MLPScoreModel(dx, dv, hidden_dims=(64, ))
 
 # Number of particles for simulation
-num_particles = 100000
+num_particles = 100_000
 
 # Define training configuration
 training_config = {
@@ -123,9 +123,8 @@ x0, v0, E0 = solver.x, solver.v, solver.E
 box_length = mesh.box_lengths[0]
 rho = qe*jax.vmap(lambda cell: jnp.mean(psi(solver.x - cell, solver.eta, box_length)))(mesh.cells())
 plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
-E1 = solver.E[:,0]
-plt.plot(mesh.cells(), (jnp.roll(E1, 0) - jnp.roll(E1, 1)) / solver.eta, label='dE/dx')
-plt.plot(mesh.cells(), E1, label='E')
+plt.plot(mesh.cells(), (jnp.roll(E0, 0) - jnp.roll(E0, 1)) / solver.eta, label='dE/dx')
+plt.plot(mesh.cells(), E0, label='E')
 plt.legend()
 plt.show()
 
@@ -161,8 +160,7 @@ for step in tqdm(range(num_steps), desc="Solving"):
     # Print progress
     if step % 20 == 0:
         print(f"Completed step {step+1}/{num_steps}, L2 norm of E: {e_l2_norms[step+1]:.6f}")
-        plt.plot(mesh.cells(), E[:,0], label='E1')
-        # plt.plot(mesh.cells(), E[:,1], label='E2')
+        plt.plot(mesh.cells(), E, label='E')
         plt.legend()
         plt.show()
 
