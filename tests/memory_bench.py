@@ -2,6 +2,11 @@
 
 #%%
 @jax.jit
+def centered_mod(x, L):
+    "centered_mod(x, L) in [-L/2, L/2]"
+    return (x + L/2) % L - L/2
+
+@jax.jit
 def psi(x, eta, box_length):
     "psi_eta(x) = max(0, 1-|x|/eta) / eta."
     x = centered_mod(x, box_length)

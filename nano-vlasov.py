@@ -126,7 +126,7 @@ dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 
 # set number of particles
-num_particles = 1_000_00
+num_particles = 1_000_000
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
@@ -178,9 +178,9 @@ def step(x, v, E, cells, eta, dt, box_length):
     v_new = v.at[:, 0].add(dt * E_at_particles)
     x_new = jnp.mod(x + dt * v_new[:, 0], box_length)
 
-    # E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
-    rho = evaluate_charge_density(x_new, cells, eta, box_length)
-    E_new = jnp.cumsum(rho - jnp.mean(rho)) * eta
+    E_new = update_electric_field(E, cells, x, v, eta, dt, box_length)
+    # rho = evaluate_charge_density(x_new, cells, eta, box_length)
+    # E_new = jnp.cumsum(rho - jnp.mean(rho)) * eta
 
     return x_new, v_new, E_new, rho
 
@@ -226,7 +226,7 @@ plt.show()
 "Plot phase space heatmap"
 
 # Downsample for plotting
-num_plot = 20_000
+num_plot = 10_000
 key_plot = jrandom.PRNGKey(123)
 idx0 = jrandom.choice(key_plot, x0.shape[0], shape=(num_plot,), replace=False)
 idx = jrandom.choice(jrandom.PRNGKey(456), x.shape[0], shape=(num_plot,), replace=False)
@@ -255,102 +255,3 @@ cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[1], label='Density')
 plt.tight_layout()
 plt.show()
 
-#%%
-@jax.jit
-def centered_mod(x, L):
-    "centered_mod(x, L) in [-L/2, L/2]"
-    return (x + L/2) % L - L/2
-
-@jax.jit
-def psi(x, eta, box_length):
-    "psi_eta(x) = max(0, 1-|x|/eta) / eta."
-    x = centered_mod(x, box_length)
-    kernel = jnp.maximum(0.0, 1.0 - jnp.abs(x / eta))
-    return kernel / eta
-
-@jax.jit
-def A(z, C, gamma):
-    "Collision kernel A(z) = C|z|^(γ)(I_d|z|^2 - z⊗z)"
-    z_norm = jnp.linalg.norm(z)
-    z_norm_safe = jnp.maximum(z_norm, 1e-10)
-    z_norm_pow = z_norm_safe ** gamma
-    z_outer = jnp.outer(z, z)
-    I_scaled = jnp.eye(z.shape[0]) * (z_norm ** 2)
-    return C * z_norm_pow * (I_scaled - z_outer)
-
-@jax.jit
-def collision(x, v, s, eta, C, gamma, box_length):
-    "Collision operator Q(f,f) = ¹⁄ₙ ∑ ψ(x[p] - x[q]) A(v[p] - v[q]) * (s[p] - s[q])"
-    def compute_single_collision(xp, vp, sp):
-        collision_terms = jax.vmap(
-            lambda xq, vq, sq: psi(xp - xq, eta, box_length) * jnp.dot(A(vp - vq, C, gamma), (sp - sq))
-        )(x, v, s)
-        return jnp.mean(collision_terms, axis=0)
-    return jax.vmap(compute_single_collision)(x, v, s)
-
-from functools import partial
-import jax, jax.numpy as jnp, jax.lax as lax
-
-# --- collision kernel --------------------------------------------------------
-@jax.jit
-def A(z, C, gamma):
-    """A(z) = C |z|^gamma (|z|² I_d − z⊗z)."""
-    z_norm  = jnp.linalg.norm(z) + 1e-10        # avoid divide-by-zero
-    factor  = C * z_norm ** gamma
-    return factor * (jnp.eye(z.shape[0]) * z_norm**2 - jnp.outer(z, z))
-
-# --- fast ψ-hat collision ----------------------------------------------------
-@partial(jax.jit, static_argnums=6)    # ← num_cells is concrete Python int
-def collision_hat_local(x, v, s, eta, C, gamma,
-                        num_cells,          # int(box_length / eta)
-                        box_length):
-    """
-    Q_i = (1/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
-          with the linear-hat kernel ψ of width η, periodic on [0,L].
-
-    Complexity O(N η/L)  (exact for the hat kernel).
-    """
-    N, d = v.shape
-    M    = num_cells                        # concrete Python int
-
-    # ---- bin & sort particles by cell --------------------------------------
-    idx    = jnp.floor(x / eta).astype(jnp.int32) % M
-    order  = jnp.argsort(idx)
-    x_s, v_s, s_s, idx_s = x[order], v[order], s[order], idx[order]
-
-    counts   = jnp.bincount(idx_s, length=M)
-    cell_ofs = jnp.cumsum(jnp.concatenate([jnp.array([0]), counts[:-1]]))
-
-    # ---- per-particle collision using lax.fori_loop (no dynamic slicing) ---
-    def Q_single(i):
-        xi, vi, si = x_s[i], v_s[i], s_s[i]
-        cell       = idx_s[i]
-        Q_i        = jnp.zeros(d)
-
-        def loop_over_cell(c, acc):
-            start = cell_ofs[c]
-            end   = start + counts[c]
-
-            def loop_over_particles(j, inner_acc):
-                xj, vj, sj = x_s[j], v_s[j], s_s[j]
-                w  = psi(xi - xj, eta, box_length)
-                dv = vi - vj
-                ds = si - sj
-                inner_acc += w * jnp.dot(A(dv, C, gamma), ds)
-                return inner_acc
-
-            acc = lax.fori_loop(start, end, loop_over_particles, acc)
-            return acc
-
-        # neighbour cells that overlap the hat (periodic)
-        for c in ((cell - 1) % M, cell, (cell + 1) % M):
-            Q_i = loop_over_cell(c, Q_i)
-
-        return Q_i / N
-
-    Q_sorted = jax.vmap(Q_single)(jnp.arange(N))
-
-    # ---- unsort back to original particle order ----------------------------
-    rev = jnp.empty_like(order)
-    rev = rev.at[order].set(jnp.arange(N))
-    return Q_sorted[rev]                  # shape (N, d)
