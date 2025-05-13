@@ -123,7 +123,7 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 2       # Velocity dimension
+dv = 3       # Velocity dimension
 
 # set number of particles
 num_particles = 1_000_000

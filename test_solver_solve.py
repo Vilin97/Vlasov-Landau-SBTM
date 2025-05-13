@@ -9,7 +9,7 @@ from tqdm import tqdm
 from src.mesh import Mesh1D
 from src.density import CosineNormal
 from src.score_model import MLPScoreModel
-from src.solver import Solver, train_initial_model, psi, evaluate_charge_density
+from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
 
 def visualize_results(solver, mesh, times, e_l2_norms):
     """Visualize the results of the solver simulation."""
@@ -48,10 +48,19 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     
     # Plot 5: L2 norm of E over time
     plt.subplot(2, 3, 5)
-    plt.plot(times, e_l2_norms)
+    plt.plot(times, e_l2_norms, label='Simulated')
+    # Predicted curve
+    t_grid = jnp.linspace(0, times[-1], len(times))
+    prefactor = -1/(k**3) * jnp.sqrt(jnp.pi/8) * jnp.exp(-1/(2*k**2) - 1.5)
+    predicted = jnp.exp(t_grid * prefactor)
+    predicted *= e_l2_norms[0] / predicted[0]
+    gamma = prefactor
+    plt.plot(t_grid, predicted, 'r--', label=fr'$e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
     plt.title('L2 Norm of Electric Field')
     plt.xlabel('Time')
     plt.ylabel('||E||_2')
+    plt.yscale('log')
+    plt.legend()
     
     # Plot 6: Histogram of velocities (v1 component)
     plt.subplot(2, 3, 6)
@@ -107,6 +116,9 @@ training_config = {
     "num_batch_steps": 0  # don't train NN when C=0
 }
 
+cells = mesh.cells()
+eta = mesh.eta
+
 #%%
 # SOLVE
 print(f"N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
@@ -123,7 +135,7 @@ x0, v0, E0 = solver.x, solver.v, solver.E
 box_length = mesh.box_lengths[0]
 rho = qe*jax.vmap(lambda cell: jnp.mean(psi(solver.x - cell, solver.eta, box_length)))(mesh.cells())
 plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
-plt.plot(mesh.cells(), (jnp.roll(E0, 0) - jnp.roll(E0, 1)) / solver.eta, label='dE/dx')
+plt.plot(mesh.cells(), jnp.gradient(E0, solver.eta[0]), label='dE/dx')
 plt.plot(mesh.cells(), E0, label='E')
 plt.legend()
 plt.show()
@@ -132,11 +144,11 @@ plt.show()
 solver.training_config = training_config
 
 # Train the initial model
-train_initial_model(model, solver.x, solver.v, initial_density, training_config)
+# train_initial_model(model, solver.x, solver.v, initial_density, training_config)
 
 # Simulation parameters
 final_time = 10.0 # set to 10 later
-dt = 0.1
+dt = 0.02
 num_steps = int(final_time / dt)
 
 # Arrays to store metrics over time
@@ -152,7 +164,12 @@ x, v, E = solver.x, solver.v, solver.E
 
 for step in tqdm(range(num_steps), desc="Solving"):
     # Perform a single time step
-    x, v, E = solver.step(x, v, E, dt)
+    E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
+    v_new = v.at[:, 0].add(dt * E_at_particles)
+    x_new = update_positions(x, v_new, dt, box_length)
+    E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
+    
+    x, v, E = x_new, v_new, E_new
     
     # Calculate metrics
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
@@ -167,96 +184,9 @@ for step in tqdm(range(num_steps), desc="Solving"):
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
 
+#%%
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
 
-#%%
-import seaborn as sns
-fig, axs = plt.subplots(1, 3, figsize=(20, 6))
-
-# Plot L2 norm of E over time
-axs[0].plot(times, e_l2_norms, label='L2 norm of E')
-axs[0].set_xlabel('Time')
-axs[0].set_ylabel('||E||_2')
-axs[0].set_title('L2 Norm of Electric Field')
-axs[0].set_yscale('log')
-axs[0].legend()
-
-# Initial phase space KDE
-kde1 = sns.kdeplot(
-    x=x0[:, 0], y=v0[:, 0], fill=True, cmap='viridis', ax=axs[1], bw_adjust=0.5, levels=100, thresh=0.05
-)
-axs[1].set_xlabel('Position (x)')
-axs[1].set_ylabel('Velocity (v1)')
-axs[1].set_title(f'Initial Phase Space Density (KDE), t=0')
-cbar1 = plt.colorbar(kde1.get_children()[0], ax=axs[1], label='Density')
-
-# Final phase space KDE
-kde2 = sns.kdeplot(
-    x=solver.x[:, 0], y=solver.v[:, 0], fill=True, cmap='viridis', ax=axs[2], bw_adjust=0.5, levels=100, thresh=0.05
-)
-axs[2].set_xlabel('Position (x)')
-axs[2].set_ylabel('Velocity (v1)')
-axs[2].set_title(f'Final Phase Space Density (KDE), t={times[-1]:.2f}')
-cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[2], label='Density')
-
-plt.tight_layout()
-plt.show()
 
 # %%
-# time step
-from src.solver import evaluate_field_at_particles, update_velocities, update_positions, update_electric_field
-import matplotlib.pyplot as plt
-dt = 0.02
-
-solver = Solver(
-    mesh=mesh,
-    num_particles=num_particles,
-    initial_density=initial_density,
-    initial_nn=model,
-    numerical_constants=numerical_constants,
-    seed=seed
-)
-x, v, E = solver.x, solver.v, solver.E
-
-cells = mesh.cells()
-eta = mesh.eta
-C = numerical_constants["C"]
-gamma = numerical_constants["gamma"]
-box_length = mesh.box_lengths[0]
-
-# 1. Evaluate electric field at particle positions
-E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
-
-# 2. Update velocities (Vlasov + landau collision)
-s = model(x, v)
-v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length)
-
-# 3. Update positions using projected velocities
-x_new = update_positions(x, v_new, dt, box_length)
-
-# 4. Update electric field on the mesh
-rho = evaluate_charge_density(x, cells, mesh.eta, box_length, qe=qe)
-E1 = jnp.cumsum(rho - jnp.mean(rho)) * eta
-
-#%%
-# 1
-indices = jnp.argsort(x[:, 0])
-E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
-
-plt.plot(cells, E[:,0], label='E0 cells')
-plt.plot(x[indices, 0], E_at_particles[indices, 0], label='E0 particles')
-plt.plot(cells, E_new[:,0], label='E0 new')
-plt.plot(cells, E_new[:,1], label='E1 new')
-plt.legend()
-plt.show()
-
-#%%
-# 2+3
-jnp.min(x_new - (x + dt * v_new[:, :dx]) % box_length)
-
-#%%
-
-kernel_values = psi(cells[:, None] - x[None, :], eta, box_length)
-jnp.sum(kernel_values>0)
-E - dt * jnp.mean(kernel_values[:, :, None] * v, axis=1)

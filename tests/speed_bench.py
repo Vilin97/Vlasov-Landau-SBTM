@@ -311,7 +311,7 @@ start = time.time()
 c_cpu = collision_hat_local(x0_cpu, v0_cpu, s_cpu, eta, C, gamma, num_cells, box_length)
 jax.block_until_ready(c_cpu)
 end = time.time()
-print(f"collision_hat_local (CPU) time: {end - start:.4f} s")
+print(f"collision_hat_local (CPU) time: {end - start:.4f} s") # 0.3 s
 
 print("Max abs diff (GPU vs CPU):", jnp.max(jnp.abs(c_gpu - c_cpu)))
 

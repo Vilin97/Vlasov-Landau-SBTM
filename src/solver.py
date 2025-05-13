@@ -1,7 +1,6 @@
 #%%
 import jax
 import jax.numpy as jnp
-from jax.numpy import mod
 from src.loss import explicit_score_matching_loss, implicit_score_matching_loss
 import optax
 from flax import nnx
@@ -118,7 +117,7 @@ def A(z, C, gamma):
     factor  = C * z_norm ** gamma
     return factor * (jnp.eye(z.shape[0]) * z_norm**2 - jnp.outer(z, z))
 
-@partial(jax.jit, static_argnums=7)
+@partial(jax.jit, static_argnames='num_cells')
 def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     """
     Q_i = (1/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
@@ -229,7 +228,7 @@ def compute_electric_field(rho, eta):
     E = jnp.cumsum(rho - jnp.mean(rho)) * eta
     return E
 
-@partial(jax.jit, static_argnums=9)
+@partial(jax.jit, static_argnames='num_cells')
 def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells):
     """Update velocities using electric field and collision term."""
     collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
@@ -240,7 +239,7 @@ def update_positions(x, v, dt, box_length):
     """Update positions using velocities, modulo box_length."""
     dx = x.shape[-1]
     x = x + dt * v[:, :dx]
-    return mod(x, box_length)
+    return jnp.mod(x, box_length)
 
 #%%
 class Solver:
@@ -326,8 +325,11 @@ class Solver:
         E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
         
         # 2. Update velocities (Vlasov + landau collision)
-        s = self.score_model(x, v)
-        v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells)
+        if C !=0 :
+            s = self.score_model(x, v)
+            v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells)
+        else:
+            v_new = v.at[:, 0].add(dt * E_at_particles)
         
         # 3. Update positions using projected velocities
         x_new = update_positions(x, v_new, dt, box_length)
