@@ -83,7 +83,7 @@ def solve_poisson_equation(rho, rho_ion, laplacian):
     return phi
 
 @jit
-def compute_electric_field_from_phi(phi, eta, d_x):
+def evaluate_electric_field_from_phi(phi, eta, d_x):
     """Compute electric field E = -∇ϕ using central differences"""
     # For 1D
     if d_x == 1:
@@ -287,7 +287,7 @@ def initialize_system(
         raise NotImplementedError("Only 1D spatial domain is currently supported")
     
     phi = solve_poisson_equation(rho, rho_ion, laplacian)
-    E0 = compute_electric_field_from_phi(phi, dx, d_x)
+    E0 = evaluate_electric_field_from_phi(phi, dx, d_x)
     
     # Initialize score network
     model = ScoreNetwork(features=score_net_features)

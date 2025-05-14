@@ -3,28 +3,30 @@ from flax import nnx
 import orbax.checkpoint as ocp
 import os
 
-
-def save_model(model, path):
-    """Save a model to the specified path."""
-    os.makedirs(path, exist_ok=True)
-    _, state = nnx.split(model)
-    checkpointer = ocp.StandardCheckpointer()
-    checkpointer.save(path + '/state', state)
-
-
-def load_model(model_reference, path):
-    """Load a model from the specified path."""
-    path += '/state'
-    graphdef, abstract_state = nnx.split(model_reference)
-    checkpointer = ocp.StandardCheckpointer()
-    state_restored = checkpointer.restore(path, abstract_state)
-
-    model = nnx.merge(graphdef, state_restored)
-    return model
-
-
 class MLPScoreModel(nnx.Module):
     """MLP-based implementation of a score model."""
+    
+    def save(self, path, **kwargs):
+        os.makedirs(path, exist_ok=True)
+        _, state = nnx.split(self)
+        checkpointer = ocp.StandardCheckpointer()
+        checkpointer.save(path + '/state', state, **kwargs)
+        return None
+
+    def load(self, path):
+        path += '/state'
+        graphdef, abstract_state = nnx.split(self)
+        checkpointer = ocp.StandardCheckpointer()
+        state_restored = checkpointer.restore(path, abstract_state)
+
+        # Get a new model instance with the restored weights
+        restored = nnx.merge(graphdef, state_restored)
+
+        # In-place update of known fields
+        self.layers = restored.layers
+        self.final_layer = restored.final_layer
+        return None
+
     
     def __init__(self, dx, dv, hidden_dims=[128, 128], activation=nnx.soft_sign, seed=0):
         """Initialize MLP score model.
@@ -38,17 +40,17 @@ class MLPScoreModel(nnx.Module):
         """
         self.hidden_dims = hidden_dims
         self.activation = activation
-        self.rngs = nnx.Rngs(seed)
+        rngs = nnx.Rngs(seed)
         
         # Initialize layers immediately
         self.layers = []
         input_dim = dx + dv  # Concatenated input dimensions
         
         for hidden_dim in self.hidden_dims:
-            self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=self.rngs))
+            self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
             input_dim = hidden_dim
         
-        self.final_layer = nnx.Linear(input_dim, dv, rngs=self.rngs)
+        self.final_layer = nnx.Linear(input_dim, dv, rngs=rngs)
     
     def __call__(self, x, v):
         """Compute the score using an MLP network.

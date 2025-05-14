@@ -11,8 +11,17 @@ from src.density import CosineNormal
 from src.score_model import MLPScoreModel
 from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
 def visualize_results(solver, mesh, times, e_l2_norms):
     """Visualize the results of the solver simulation."""
+    dt = times[1] - times[0]
+    num_particles = solver.x.shape[0]
+    dx = solver.x.shape[1]
+    dv = solver.v.shape[1]
+    num_cells = mesh.cells().shape[0]
+    alpha, k = solver.numerical_constants["alpha"], solver.numerical_constants["k"]
+    
     plt.figure(figsize=(18, 10))
     
     # Plot 1: Final particle phase space (position and first velocity component)
@@ -40,7 +49,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     
     # Plot 4: Final electric field
     plt.subplot(2, 3, 4)
-    plt.plot(x_cells, solver.E, label=["E1", "E2"])
+    plt.plot(x_cells, solver.E, label="E")
     plt.title('Final Electric Field')
     plt.xlabel('Position (x)')
     plt.ylabel('Electric Field (E)')
@@ -52,6 +61,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     # Predicted curve
     t_grid = jnp.linspace(0, times[-1], len(times))
     prefactor = -1/(k**3) * jnp.sqrt(jnp.pi/8) * jnp.exp(-1/(2*k**2) - 1.5)
+    prefactor -= solver.numerical_constants["C"] * jnp.sqrt(2/(9*jnp.pi))
     predicted = jnp.exp(t_grid * prefactor)
     predicted *= e_l2_norms[0] / predicted[0]
     gamma = prefactor
@@ -76,7 +86,8 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     os.makedirs(plots_dir, exist_ok=True)
     
     # Save figure to plots directory
-    plt.savefig(os.path.join(plots_dir, 'solver_solve.png'))
+    filename = f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}_dt{dt}_N{num_particles}_cells{num_cells}.png'
+    plt.savefig(os.path.join(plots_dir, filename))
     plt.show()
 
 #%%
@@ -87,15 +98,15 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 1       # Velocity dimension
+dv = 3       # Velocity dimension
 gamma = -dv
-C = 0.
+C = 0.1
 qe = 1.
-numerical_constants={"qe": qe, "C": C, "gamma": gamma}
+numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 128 # small number for debugging
+num_cells = 256 # small number for debugging
 mesh = Mesh1D(box_length, num_cells)
 
 # Create initial density distribution
@@ -109,18 +120,17 @@ num_particles = 100_000
 
 # Define training configuration
 training_config = {
-    "batch_size": 64,
-    "num_epochs": 0, # don't train NN when C=0
-    "abs_tol": 1e-4,
+    "batch_size": 1000,
+    "num_epochs": 10, # initial training
+    "abs_tol": 1e-3,
     "learning_rate": 1e-3,
-    "num_batch_steps": 0  # don't train NN when C=0
+    "num_batch_steps": 10  # at each step
 }
 
 cells = mesh.cells()
 eta = mesh.eta
 
 #%%
-# SOLVE
 print(f"N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
 solver = Solver(
     mesh=mesh,
@@ -130,22 +140,30 @@ solver = Solver(
     numerical_constants=numerical_constants,
     seed=seed
 )
+solver.training_config = training_config
 x0, v0, E0 = solver.x, solver.v, solver.E
 
 box_length = mesh.box_lengths[0]
-rho = qe*jax.vmap(lambda cell: jnp.mean(psi(solver.x - cell, solver.eta, box_length)))(mesh.cells())
-plt.plot(mesh.cells(), rho - jnp.mean(rho), label='rho')
-plt.plot(mesh.cells(), jnp.gradient(E0, solver.eta[0]), label='dE/dx')
-plt.plot(mesh.cells(), E0, label='E')
+rho = evaluate_charge_density(x0, cells, eta, box_length)
+plt.plot(cells, rho - jnp.mean(rho), label='rho')
+plt.plot(cells, jnp.gradient(E0, solver.eta[0]), label='dE/dx')
+plt.plot(cells, E0, label='E')
 plt.legend()
 plt.show()
 
-# Add training_config to solver (needed for the step method)
-solver.training_config = training_config
+#%%
+# Train and save the initial model
+path = os.path.expanduser(f'~/Vlasov-Landau-SBTM/data/score_models/landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}')
+if not os.path.exists(path):
+    train_initial_model(model, x0, v0, initial_density,training_config,verbose=True)
+    model.save(path)
 
-# Train the initial model
-# train_initial_model(model, solver.x, solver.v, initial_density, training_config)
+#%%
+path = os.path.expanduser(f'~/Vlasov-Landau-SBTM/data/score_models/landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}')
+solver.score_model.load(path)
 
+#%%
+"Solve"
 # Simulation parameters
 final_time = 10.0 # set to 10 later
 dt = 0.02
@@ -164,22 +182,18 @@ x, v, E = solver.x, solver.v, solver.E
 
 for step in tqdm(range(num_steps), desc="Solving"):
     # Perform a single time step
-    E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
-    v_new = v.at[:, 0].add(dt * E_at_particles)
-    x_new = update_positions(x, v_new, dt, box_length)
-    E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
     
-    x, v, E = x_new, v_new, E_new
+    x, v, E = solver.step(x, v, E, dt)
     
     # Calculate metrics
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
     
     # Print progress
-    if step % 20 == 0:
-        print(f"Completed step {step+1}/{num_steps}, L2 norm of E: {e_l2_norms[step+1]:.6f}")
-        plt.plot(mesh.cells(), E, label='E')
-        plt.legend()
-        plt.show()
+    # if step % 20 == 0:
+    #     print(f"Completed step {step+1}/{num_steps}, L2 norm of E: {e_l2_norms[step+1]:.6f}")
+    #     plt.plot(mesh.cells(), E, label='E')
+    #     plt.legend()
+    #     plt.show()
 
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
@@ -190,3 +204,19 @@ visualize_results(solver, mesh, times, e_l2_norms)
 
 
 # %%
+# NOTE: `collision` takes time O(num_particles/num_cells). So increasing num_cells will decrease the time taken!
+
+import time
+from src.solver import collision
+
+s = model(x0, v0)
+collision(x0, v0, s, eta, 1., gamma, box_length, num_cells)
+
+t0 = time.time()
+s = model(x0, v0).block_until_ready()
+t1 = time.time()
+collision(x0, v0, s, eta, 1., gamma, box_length, num_cells).block_until_ready()
+t2 = time.time()
+
+print(f"Model time: {t1 - t0:.4f} seconds")
+print(f"Collision time: {t2 - t1:.4f} seconds")

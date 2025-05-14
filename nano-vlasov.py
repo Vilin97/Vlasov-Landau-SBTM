@@ -194,8 +194,8 @@ for step_num in tqdm(range(num_steps)):
     x, v, E, rho = step(x, v, E, cells, eta, dt, box_length)
     t += dt
 
-    if step_num % max(1, num_steps // 10) == 0:
-        plot_intermediate(x, v[:,0], E, rho, cells, t)
+    # if step_num % max(1, num_steps // 10) == 0:
+        # plot_intermediate(x, v[:,0], E, rho, cells, t)
     E_L2.append(jnp.sqrt(jnp.sum(E**2) * eta))
 
 #%%

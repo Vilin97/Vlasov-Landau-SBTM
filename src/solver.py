@@ -20,7 +20,7 @@ def psi(x, eta, box_length):
     return kernel / eta
 
 #%%
-def train_initial_model(model, x, v, initial_density, training_config):
+def train_initial_model(model, x, v, initial_density, training_config, verbose=False):
     """Train the initial neural network using the score of the initial density."""
     batch_size = training_config["batch_size"]
     num_epochs = training_config["num_epochs"]
@@ -33,8 +33,10 @@ def train_initial_model(model, x, v, initial_density, training_config):
     
     for epoch in range(num_epochs):
         loss = loss_fn(model, (x, v, score_vals))
+        if verbose:
+            print(f"Epoch {epoch}: loss = {loss:.5f}")
         if loss < abs_tol:
-            print(f"Early stopping at epoch {epoch} with loss {loss}")
+            print(f"Stopping at epoch {epoch} with loss {loss :.5f} < {abs_tol}")
             break
         
         perm = jax.random.permutation(jax.random.PRNGKey(epoch), len(x))
@@ -223,16 +225,10 @@ def update_electric_field(E, cells, x, v, eta, dt, box_length):
     return (E - dt * box_length * J).astype(E.dtype)
 
 @jax.jit
-def compute_electric_field(rho, eta):
-    """Compute electric field on the mesh."""
+def evaluate_electric_field(rho, eta):
+    """Evaluate electric field on the mesh."""
     E = jnp.cumsum(rho - jnp.mean(rho)) * eta
     return E
-
-@partial(jax.jit, static_argnames='num_cells')
-def update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells):
-    """Update velocities using electric field and collision term."""
-    collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
-    return v + dt * (E_at_particles - collision_term)
 
 @jax.jit
 def update_positions(x, v, dt, box_length):
@@ -299,7 +295,7 @@ class Solver:
         rho = evaluate_charge_density(self.x, mesh.cells(), mesh.eta, box_length, qe=qe)
 
         # 3) Compute electric field
-        self.E = compute_electric_field(rho, self.eta)
+        self.E = evaluate_electric_field(rho, self.eta)
         
     def step(self, x, v, E, dt):
         """
@@ -325,11 +321,10 @@ class Solver:
         E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
         
         # 2. Update velocities (Vlasov + landau collision)
-        if C !=0 :
+        v_new = v.at[:, 0].add(dt * E_at_particles)
+        if C != 0:
             s = self.score_model(x, v)
-            v_new = update_velocities(v, E_at_particles, x, s, eta, C, gamma, dt, box_length, num_cells)
-        else:
-            v_new = v.at[:, 0].add(dt * E_at_particles)
+            v_new = v_new - dt * collision(x, v, s, eta, C, gamma, box_length, num_cells)
         
         # 3. Update positions using projected velocities
         x_new = update_positions(x, v_new, dt, box_length)
@@ -338,7 +333,8 @@ class Solver:
         E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
         
         # 5. Train score network
-        train_score_model(self.score_model, x_new, v_new, self.training_config)
+        if C != 0:
+            train_score_model(self.score_model, x_new, v_new, self.training_config)
         
         return x_new, v_new, E_new
     
