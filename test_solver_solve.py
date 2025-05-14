@@ -11,7 +11,7 @@ from src.density import CosineNormal
 from src.score_model import MLPScoreModel
 from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 def visualize_results(solver, mesh, times, e_l2_norms):
     """Visualize the results of the solver simulation."""
@@ -100,13 +100,13 @@ k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 3       # Velocity dimension
 gamma = -dv
-C = 0.1
+C = 1.0
 qe = 1.
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 256 # small number for debugging
+num_cells = 256
 mesh = Mesh1D(box_length, num_cells)
 
 # Create initial density distribution

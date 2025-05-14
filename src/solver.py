@@ -49,6 +49,7 @@ def train_initial_model(model, x, v, initial_density, training_config, verbose=F
             batch = (x_batch, v_batch, s_batch)
             batch_loss = opt_step(model, optimizer, loss_fn, batch)
 
+# TODO: something is taking forever here
 def train_score_model(score_model, x_batch, v_batch, training_config):
     """
     Train the score network using implicit score matching loss.
