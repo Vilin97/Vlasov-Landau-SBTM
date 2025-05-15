@@ -11,7 +11,8 @@ from src.density import CosineNormal
 from src.score_model import MLPScoreModel
 from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 def visualize_results(solver, mesh, times, e_l2_norms):
     """Visualize the results of the solver simulation."""
@@ -20,7 +21,8 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     dx = solver.x.shape[1]
     dv = solver.v.shape[1]
     num_cells = mesh.cells().shape[0]
-    alpha, k = solver.numerical_constants["alpha"], solver.numerical_constants["k"]
+    alpha, k, C = solver.numerical_constants["alpha"], solver.numerical_constants["k"], solver.numerical_constants["C"]
+    gd_steps = solver.training_config["num_batch_steps"]
     
     plt.figure(figsize=(18, 10))
     
@@ -86,7 +88,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     os.makedirs(plots_dir, exist_ok=True)
     
     # Save figure to plots directory
-    filename = f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}_dt{dt}_N{num_particles}_cells{num_cells}.png'
+    filename = f'landau_damping_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_dt{dt}_N{num_particles}_cells{num_cells}_gd{gd_steps}.png'
     plt.savefig(os.path.join(plots_dir, filename))
     plt.show()
 
@@ -100,7 +102,7 @@ k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 3       # Velocity dimension
 gamma = -dv
-C = 1.0
+C = 1
 qe = 1.
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
@@ -124,7 +126,7 @@ training_config = {
     "num_epochs": 10, # initial training
     "abs_tol": 1e-3,
     "learning_rate": 1e-3,
-    "num_batch_steps": 10  # at each step
+    "num_batch_steps": 100  # at each step
 }
 
 cells = mesh.cells()
