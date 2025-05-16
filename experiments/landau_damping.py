@@ -10,6 +10,7 @@ from src.mesh import Mesh1D
 from src.density import CosineNormal
 from src.score_model import MLPScoreModel
 from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
+from src.path import ROOT, DATA, PLOTS, MODELS
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -84,7 +85,7 @@ def visualize_results(solver, mesh, times, e_l2_norms):
     plt.tight_layout()
     
     # Create plots directory if it doesn't exist
-    plots_dir = 'plots'
+    plots_dir = PLOTS
     os.makedirs(plots_dir, exist_ok=True)
     
     # Save figure to plots directory
@@ -102,7 +103,7 @@ k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 3       # Velocity dimension
 gamma = -dv
-C = 1
+C = 0
 qe = 1.
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
@@ -118,7 +119,7 @@ initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 model = MLPScoreModel(dx, dv, hidden_dims=(64, ))
 
 # Number of particles for simulation
-num_particles = 100_000
+num_particles = 10_000
 
 # Define training configuration
 training_config = {
@@ -126,7 +127,7 @@ training_config = {
     "num_epochs": 10, # initial training
     "abs_tol": 1e-3,
     "learning_rate": 1e-3,
-    "num_batch_steps": 100  # at each step
+    "num_batch_steps": 10  # at each step
 }
 
 cells = mesh.cells()
@@ -197,3 +198,5 @@ solver.x, solver.v, solver.E = x, v, E
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
 
+
+# %%
