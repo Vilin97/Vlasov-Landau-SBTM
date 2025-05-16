@@ -190,13 +190,6 @@ for step in tqdm(range(num_steps), desc="Solving"):
     # Calculate metrics
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
     
-    # Print progress
-    # if step % 20 == 0:
-    #     print(f"Completed step {step+1}/{num_steps}, L2 norm of E: {e_l2_norms[step+1]:.6f}")
-    #     plt.plot(mesh.cells(), E, label='E')
-    #     plt.legend()
-    #     plt.show()
-
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
 
@@ -204,21 +197,3 @@ solver.x, solver.v, solver.E = x, v, E
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
 
-
-# %%
-# NOTE: `collision` takes time O(num_particles/num_cells). So increasing num_cells will decrease the time taken!
-
-import time
-from src.solver import collision
-
-s = model(x0, v0)
-collision(x0, v0, s, eta, 1., gamma, box_length, num_cells)
-
-t0 = time.time()
-s = model(x0, v0).block_until_ready()
-t1 = time.time()
-collision(x0, v0, s, eta, 1., gamma, box_length, num_cells).block_until_ready()
-t2 = time.time()
-
-print(f"Model time: {t1 - t0:.4f} seconds")
-print(f"Collision time: {t2 - t1:.4f} seconds")
