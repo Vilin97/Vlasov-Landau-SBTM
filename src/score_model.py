@@ -28,7 +28,7 @@ class MLPScoreModel(nnx.Module):
         return None
 
     
-    def __init__(self, dx, dv, hidden_dims=[128, 128], activation=nnx.soft_sign, seed=0):
+    def __init__(self, dx, dv, hidden_dims=[128, 128], activation=nnx.soft_sign, seed=0, dtype=jnp.float32):
         """Initialize MLP score model.
         
         Args:
@@ -37,9 +37,11 @@ class MLPScoreModel(nnx.Module):
             hidden_dims: Sequence of hidden dimensions
             activation: Activation function
             seed: Random seed for initialization
+            dtype: Data type for all layers (e.g., jnp.float32 or jnp.float64)
         """
         self.hidden_dims = hidden_dims
         self.activation = activation
+        self.dtype = dtype
         rngs = nnx.Rngs(seed)
         
         # Initialize layers immediately
@@ -47,10 +49,10 @@ class MLPScoreModel(nnx.Module):
         input_dim = dx + dv  # Concatenated input dimensions
         
         for hidden_dim in self.hidden_dims:
-            self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs))
+            self.layers.append(nnx.Linear(input_dim, hidden_dim, rngs=rngs, dtype=self.dtype))
             input_dim = hidden_dim
         
-        self.final_layer = nnx.Linear(input_dim, dv, rngs=rngs)
+        self.final_layer = nnx.Linear(input_dim, dv, rngs=rngs, dtype=self.dtype)
     
     def __call__(self, x, v):
         """Compute the score using an MLP network.
@@ -80,20 +82,20 @@ class MLPScoreModel(nnx.Module):
 class ResNetScoreModel(nnx.Module):
     """ResNet-based implementation of a score model."""
     
-    def __init__(self, mlp, seed=0):
+    def __init__(self, mlp, seed=0, dtype=jnp.float32):
         """Initialize ResNet score model using an MLP with residual connections.
         
         Args:
             mlp: An MLPScoreModel instance to use as the base network
             seed: Random seed for initialization
+            dtype: Data type for all layers (e.g., jnp.float32 or jnp.float64)
         """
         self.mlp = mlp
         self.activation = mlp.activation
         self.rngs = nnx.Rngs(seed)
+        self.dtype = dtype
         
         # Create projections for residual connections
-        # We need to determine the input dimension (dx + dv)
-        # This will be the first layer's input dimension in the MLP
         self.projections = []
         
         # Get the dimensions from the first layer in the MLP
@@ -105,7 +107,7 @@ class ResNetScoreModel(nnx.Module):
                 
                 # If dimensions don't match, create a projection
                 if input_dim != out_dim:
-                    projection = nnx.Linear(input_dim, out_dim, rngs=self.rngs)
+                    projection = nnx.Linear(input_dim, out_dim, rngs=self.rngs, dtype=self.dtype)
                     self.projections.append(projection)
                 else:
                     self.projections.append(None)
