@@ -8,6 +8,7 @@ import time
 import jax.lax as lax
 from flax import nnx
 import optax
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 #%%
 @jax.jit
@@ -421,7 +422,7 @@ def divergence_wrt_v(f, mode: str, num_noise: int = 1):
                 epsilon = jax.random.normal(key, v.shape, dtype=v.dtype)
                 return jnp.sum(
                     (f(x, v + alpha * epsilon) - f(x, v - alpha * epsilon)) * epsilon
-                ) / alpha
+                ) / (2*alpha)
             return jax.vmap(denoise)(jax.random.split(key, num_noise)).mean()
         return div
     else:
@@ -440,8 +441,79 @@ def divergence_wrt_v(f, mode: str, num_noise: int = 1):
             return jax.vmap(vJv)(jax.random.split(key, num_noise)).mean()
         return div
 
+# %%
+from flax import nnx
+import optax
+from src.score_model import MLPScoreModel
+import time
+
+dx = 1
+dv = 3
+seed = 42
+box_length = 1
+model = MLPScoreModel(dx, dv, hidden_dims=(64,))
+num_particles = 1_000_000
+key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
+v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
+x = jrandom.uniform(key_x, (num_particles,1), minval=0, maxval=box_length)
+
+for div_mode in ['forward', 'reverse']:
+    print(f"Testing divergence mode: {div_mode}")
+    div_fn = divergence_wrt_v(model, div_mode, 1)
+
+    div = div_fn(x[0],v[0])
+    print("Divergence:", div)
+
+    @jax.jit
+    def compute_mean_div(x, v):
+        return jnp.mean(jax.vmap(div_fn)(x, v))
+
+    _ = compute_mean_div(x, v)
+
+    # ── Timed execution-only run ──
+    mean_div = compute_mean_div(x, v)
+    print("Mean divergence:", mean_div)
+
+    times = []
+    for _ in range(20):
+        start = time.time()
+        out = compute_mean_div(x, v)
+        jax.block_until_ready(out)
+        times.append(time.time() - start)
+
+    print(f"Avg execution time: {sum(times)/len(times):.4f} s")
+
+for div_mode in ['approximate_gaussian', 'approximate_rademacher', 'denoised']:
+    print(f"Testing divergence mode: {div_mode}")
+    div_fn = divergence_wrt_v(model, div_mode, 1)
+
+    key = jax.random.PRNGKey(0)
+    div = div_fn(x[0], v[0], key=key)
+    print("Divergence:", div)
+
+    @jax.jit
+    def compute_mean_div(x, v, key):
+        keys = jax.random.split(key, x.shape[0])
+        return jnp.mean(jax.vmap(div_fn)(x, v, keys))
+
+    _ = compute_mean_div(x, v, key)
+
+    # ── Timed execution-only run ──
+    mean_div = compute_mean_div(x, v, key)
+    print("Mean divergence:", mean_div)
+
+    times = []
+    for _ in range(20):
+        start = time.time()
+        out = compute_mean_div(x, v, key)
+        jax.block_until_ready(out)
+        times.append(time.time() - start)
+
+    print(f"Avg execution time: {sum(times)/len(times):.4f} s")
+
+#%%
 @nnx.jit(static_argnames=['div_mode', 'n_samples'])
-def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='reverse', n_samples=100):
+def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='reverse', n_samples=1):
     # Get the appropriate divergence function
     div_fn = divergence_wrt_v(s, div_mode, n_samples)
     
@@ -521,7 +593,7 @@ def opt_step(model, optimizer, loss, batch, key=None):
     optimizer.update(grads)
     return loss_value
 
-# %%
+#%%
 from flax import nnx
 import optax
 from src.score_model import MLPScoreModel
@@ -532,102 +604,27 @@ dv = 3
 seed = 42
 box_length = 1
 model = MLPScoreModel(dx, dv, hidden_dims=(64,))
-num_particles = 1000_000
+num_particles = 1_000_000
 key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
 v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
 x = jrandom.uniform(key_x, (num_particles,1), minval=0, maxval=box_length)
 
-for div_mode in ['forward', 'reverse']:
+for div_mode in ['forward', 'reverse', 'approximate_gaussian', 'approximate_rademacher', 'denoised']:
     print(f"Testing divergence mode: {div_mode}")
-    div_fn = divergence_wrt_v(model, div_mode, 1)
-
-    div = div_fn(x[0],v[0])
-    print("Divergence:", div)
-
-    @jax.jit
-    def compute_mean_div(x, v):
-        return jnp.mean(jax.vmap(div_fn)(x, v))
-
-    _ = compute_mean_div(x, v)
-
-    # ── Timed execution-only run ──
-    mean_div = compute_mean_div(x, v)
-    print("Mean divergence:", mean_div)
-
-    times = []
-    for _ in range(20):
-        start = time.time()
-        out = compute_mean_div(x, v)
-        jax.block_until_ready(out)
-        times.append(time.time() - start)
-
-    print(f"Avg execution time: {sum(times)/len(times):.4f} s")
-
-for div_mode in ['approximate_gaussian', 'approximate_rademacher', 'denoised']:
-    print(f"Testing divergence mode: {div_mode}")
-    div_fn = divergence_wrt_v(model, div_mode, 1)
-
     key = jax.random.PRNGKey(0)
-    div = div_fn(x[0], v[0], key=key)
-    print("Divergence:", div)
-
-    @jax.jit
-    def compute_mean_div(x, v, key):
-        keys = jax.random.split(key, x.shape[0])
-        return jnp.mean(jax.vmap(div_fn)(x, v, keys))
-
-    _ = compute_mean_div(x, v, key)
-
-    # ── Timed execution-only run ──
-    mean_div = compute_mean_div(x, v, key)
-    print("Mean divergence:", mean_div)
-
+    loss_val = implicit_score_matching_loss(model, x, v, key, div_mode=div_mode)
+    print("Loss value:", loss_val)
+    
     times = []
-    for _ in range(20):
+    for _ in range(50):
         start = time.time()
-        out = compute_mean_div(x, v, key)
+        out = implicit_score_matching_loss(model, x, v, key, div_mode=div_mode)
         jax.block_until_ready(out)
         times.append(time.time() - start)
 
     print(f"Avg execution time: {sum(times)/len(times):.4f} s")
 
 #%%
-def vT_Jv(f, x, v, key):
-    eps = jax.random.normal(key, v.shape, v.dtype)
-    _, jvp_val = jax.jvp(lambda v_: f(x, v_), (v,), (eps,))
-    return jnp.dot(jvp_val, eps)          # forward-mode, no tape
-
-def divergence_wrt_v(f, num_noise=1):
-    @jax.jit
-    def div(x, v, key):
-        keys  = jax.random.split(key, num_noise)
-        return jnp.mean(jax.vmap(lambda k: vT_Jv(f, x, v, k))(keys))
-    return div
-
-for div_mode in ['approximate_gaussian', 'approximate_rademacher', 'denoised']:
-    print(f"Testing divergence mode: {div_mode}")
-    div_fn = divergence_wrt_v(model, 1)
-
-    key = jax.random.PRNGKey(0)
-    div = div_fn(x[0], v[0], key=key)
-    print("Divergence:", div)
-
-    @jax.jit
-    def compute_mean_div(x, v, key):
-        keys = jax.random.split(key, x.shape[0])
-        return jnp.mean(jax.vmap(div_fn)(x, v, keys))
-
-    _ = compute_mean_div(x, v, key)
-
-    # ── Timed execution-only run ──
-    mean_div = compute_mean_div(x, v, key)
-    print("Mean divergence:", mean_div)
-
-    times = []
-    for _ in range(20):
-        start = time.time()
-        out = compute_mean_div(x, v, key)
-        jax.block_until_ready(out)
-        times.append(time.time() - start)
-
-    print(f"Avg execution time: {sum(times)/len(times):.4f} s")
+# TODO: bench gradient descent
+optimizer = optax.adamw(1e-3)
+opt_step(model, optimizer, implicit_score_matching_loss, (x, v), key=None)
