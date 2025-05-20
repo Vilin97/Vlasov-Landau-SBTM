@@ -49,67 +49,38 @@ def train_initial_model(model, x, v, initial_density, training_config, verbose=F
             batch = (x_batch, v_batch, s_batch)
             batch_loss = opt_step(model, optimizer, loss_fn, batch)
 
-# TODO: something is taking forever here
-def train_score_model(score_model, x_batch, v_batch, training_config):
+def train_score_model(model, optimizer, loss_fn, x, v, key, batch_size, num_batch_steps):
     """
-    Train the score network using implicit score matching loss.
-    
-    Args:
-        x_batch: Particle positions of shape (num_particles, dx)
-        v_batch: Particle velocities of shape (num_particles, dv)
-        key: JAX random key or seed integer
-        
-    Returns:
-        The list of batch losses during training.
+    Run num_batch_steps of opt_step, shuffling data each epoch.
+    Returns list of loss values.
     """
-    # Extract training parameters from config
-    batch_size = training_config["batch_size"]
-    learning_rate = training_config["learning_rate"]
-    num_batch_steps = training_config["num_batch_steps"]
-    num_samples = x_batch.shape[0]
-    div_mode = training_config.get("div_mode", "reverse")
-    
-    optimizer = nnx.Optimizer(score_model, optax.adamw(learning_rate))
-    
-    # Define loss function without div_mode parameter in the inner lambda
-    def loss_fn(model, batch, key):
-        return implicit_score_matching_loss(
-            model, 
-            batch[0], batch[1], 
-            key=key, 
-            div_mode=div_mode
-        )
-    
-    step = 0
-    batch_losses = []
-    for epoch in range(num_batch_steps):
-        # Generate a random key for this step
-        epoch_key = jax.random.PRNGKey(epoch)
-        
-        # Shuffle data for each step
-        perm = jax.random.permutation(epoch_key, num_samples)
-        x_shuffled, v_shuffled = x_batch[perm], v_batch[perm]
-        
-        # Process mini-batches
-        for i in range(0, num_samples, batch_size):
-            step_key = jax.random.fold_in(epoch_key, i)
-            x_mini = x_shuffled[i:i + batch_size]
-            v_mini = v_shuffled[i:i + batch_size]
-            mini_batch = (x_mini, v_mini)
-            
-            batch_loss = opt_step(score_model, optimizer, loss_fn, mini_batch, step_key)
-            batch_losses.append(batch_loss)
-            step += 1
-            if step == num_batch_steps:
-                return batch_losses
+    num_samples = x.shape[0]
+    losses = []
+    batch_count = 0
+    for step in range(num_batch_steps):
+        key, subkey = jax.random.split(key)
+        # Shuffle data
+        perm = jax.random.permutation(subkey, num_samples)
+        x = x[perm]
+        v = v[perm]
+        # Mini-batch
+        start_idx = 0
+        while start_idx < num_samples:
+            end_idx = min(start_idx + batch_size, num_samples)
+            batch = (x[start_idx:end_idx], v[start_idx:end_idx])
+            key, subkey = jax.random.split(key)
+            loss = opt_step(model, optimizer, loss_fn, batch, subkey)
+            losses.append(loss)
+            start_idx = end_idx
+            batch_count += 1
+            if batch_count >= num_batch_steps:
+                return losses
+    return losses
 
 @nnx.jit(static_argnames='loss')
 def opt_step(model, optimizer, loss, batch, key=None):
     """Perform one step of optimization"""
-    if key is not None:
-        loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
-    else:
-        loss_value, grads = nnx.value_and_grad(loss)(model, batch)
+    loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
     optimizer.update(grads)
     return loss_value
 
@@ -297,8 +268,14 @@ class Solver:
 
         # 3) Compute electric field
         self.E = evaluate_electric_field(rho, self.eta)
+
+        # 4) Initialize training config for score model
+        lr = self.training_config.et("learning_rate", 1e-3)
+        self.optimizer  = nnx.Optimizer(self.score_model, optax.adamw(lr))
+        div_mode = self.training_config.get("div_mode", "approximate_rademacher")
+        self.loss_fn = lambda model, batch, key: implicit_score_matching_loss(model, batch[0], batch[1], key=key, div_mode=div_mode)
         
-    def step(self, x, v, E, dt):
+    def step(self, x, v, E, dt, key = None):
         """
         Perform a single time step of the simulation.
         
@@ -307,6 +284,7 @@ class Solver:
             v: Particle velocities
             E: Electric field
             dt: Time step size
+            key: Random key for training the score model (optional)
             
         Returns:
             Updated particle positions, velocities, and electric field
@@ -335,39 +313,10 @@ class Solver:
         
         # 5. Train score network
         if C != 0:
-            train_score_model(self.score_model, x_new, v_new, self.training_config)
+            assert key is not None, "Key must be provided for training the score model"
+            batch_size = self.training_config.get("batch_size", 1024)
+            num_batch_steps = self.training_config.get("num_batch_steps", 10)
+            train_score_model(self.score_model, self.optimizer, self.loss_fn, x, v, key, batch_size, num_batch_steps)
         
         return x_new, v_new, E_new
     
-    def solve(self, final_time, dt):
-        """
-        Solve the Maxwell-Vlasov-landau system using SBTM.
-        
-        Args:
-            final_time: Final simulation time
-            dt: Time step size
-            key: JAX random key or seed integer
-            
-        Returns:
-            Particle states, electric field, and score model at final time
-        """
-        # Calculate number of time steps
-        num_steps = int(final_time / dt)
-        
-        # Initial particle states and field are already set in __init__
-        x = self.x
-        v = self.v
-        E = self.E
-        
-        for step_idx in range(num_steps):
-            # Optional logging
-            if step_idx % 10 == 0:
-                print(f"Step {step_idx}/{num_steps}")
-            
-            # Perform one simulation step
-            x, v, E = self.step(x, v, E, dt)
-            
-        # Save final state
-        self.x, self.v, self.E = x, v, E
-        
-        return self.x, self.v, self.E, self.score_model

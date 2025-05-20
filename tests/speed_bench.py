@@ -169,11 +169,11 @@ k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 
-num_particles = 1_000_0
+num_particles = 1_000_00
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 128
+num_cells = 256
 eta = box_length / num_cells
 cells = (jnp.arange(num_cells) + 0.5) * eta
 
@@ -204,15 +204,16 @@ jax.block_until_ready(c1)
 end1 = time.time()
 print(f"collision_hat_local time: {end1 - start1:.4f} s")
 
-# Time collision
-collision(x0, v0, s, eta, C, gamma, box_length)
-start2 = time.time()
-c2 = collision(x0, v0, s, eta, C, gamma, box_length) # O(N^2), so N must be <10_000
-jax.block_until_ready(c2)
-end2 = time.time()
-print(f"collision (naive) time: {end2 - start2:.4f} s")
+# NOTE: below is a slower collision operator
+# # Time collision
+# collision(x0, v0, s, eta, C, gamma, box_length)
+# start2 = time.time()
+# c2 = collision(x0, v0, s, eta, C, gamma, box_length) # O(N^2), so N must be <10_000
+# jax.block_until_ready(c2)
+# end2 = time.time()
+# print(f"collision (naive) time: {end2 - start2:.4f} s")
 
-print(jnp.max(jnp.abs(c1 - c2)))  # should be small
+# print(jnp.max(jnp.abs(c1 - c2)))  # should be small
 
 # %%
 @jax.jit
@@ -541,24 +542,14 @@ def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='revers
         loss_fn = lambda x, v, k: compute_loss(x, v, k)
         return jnp.mean(jax.vmap(loss_fn)(x_batch, v_batch, keys))
 
-def train_score_model(score_model, x_batch, v_batch, training_config):
+def train_score_model(score_model, x_batch, v_batch, training_config, step):
     # Extract training parameters from config
     batch_size = training_config["batch_size"]
     learning_rate = training_config["learning_rate"]
     num_batch_steps = training_config["num_batch_steps"]
     num_samples = x_batch.shape[0]
-    div_mode = training_config.get("div_mode", "reverse")
     
     optimizer = nnx.Optimizer(score_model, optax.adamw(learning_rate))
-    
-    # Define loss function without div_mode parameter in the inner lambda
-    def loss_fn(model, batch, key):
-        return implicit_score_matching_loss(
-            model, 
-            batch[0], batch[1], 
-            key=key, 
-            div_mode=div_mode
-        )
     
     step = 0
     batch_losses = []
@@ -577,7 +568,7 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
             v_mini = v_shuffled[i:i + batch_size]
             mini_batch = (x_mini, v_mini)
             
-            batch_loss = opt_step(score_model, optimizer, loss_fn, mini_batch, step_key)
+            batch_loss = step(score_model, optimizer, loss_fn, mini_batch, step_key)
             batch_losses.append(batch_loss)
             step += 1
             if step == num_batch_steps:
@@ -586,14 +577,12 @@ def train_score_model(score_model, x_batch, v_batch, training_config):
 @nnx.jit(static_argnames='loss')
 def opt_step(model, optimizer, loss, batch, key=None):
     """Perform one step of optimization"""
-    if key is not None:
-        loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
-    else:
-        loss_value, grads = nnx.value_and_grad(loss)(model, batch)
+    loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
     optimizer.update(grads)
     return loss_value
 
 #%%
+"Bench divergence"
 from flax import nnx
 import optax
 from src.score_model import MLPScoreModel
@@ -604,10 +593,10 @@ dv = 3
 seed = 42
 box_length = 1
 model = MLPScoreModel(dx, dv, hidden_dims=(64,))
-num_particles = 1_000_000
+num_particles = 1_000_00
 key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
 v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
-x = jrandom.uniform(key_x, (num_particles,1), minval=0, maxval=box_length)
+x = jrandom.uniform(key_x, (num_particles, dx), minval=0, maxval=box_length)
 
 for div_mode in ['forward', 'reverse', 'approximate_gaussian', 'approximate_rademacher', 'denoised']:
     print(f"Testing divergence mode: {div_mode}")
@@ -625,6 +614,96 @@ for div_mode in ['forward', 'reverse', 'approximate_gaussian', 'approximate_rade
     print(f"Avg execution time: {sum(times)/len(times):.4f} s")
 
 #%%
-# TODO: bench gradient descent
-optimizer = optax.adamw(1e-3)
-opt_step(model, optimizer, implicit_score_matching_loss, (x, v), key=None)
+"bench `opt_step`"
+for div_mode in ['forward', 'reverse', 'approximate_gaussian', 'approximate_rademacher', 'denoised']:
+    model = MLPScoreModel(dx, dv, hidden_dims=(64,))
+    print(f"Testing divergence mode: {div_mode}")
+    key = jax.random.PRNGKey(0)
+    optimizer = nnx.Optimizer(model, optax.adamw(1e-3))
+    loss_fn = lambda model, batch, key: implicit_score_matching_loss(model, batch[0], batch[1], key=key, div_mode=div_mode)
+    batch = (x, v)
+    opt_step(model, optimizer, loss_fn, batch, key)
+    
+    times = []
+    for _ in range(50):
+        key, subkey = jax.random.split(key)
+        start = time.time()
+        out = opt_step(model, optimizer, loss_fn, batch, subkey)
+        jax.block_until_ready(out)
+        times.append(time.time() - start)
+
+    print(f"Avg execution time: {sum(times)/len(times):.4f} s")
+    print(loss_fn(model, batch, key))
+
+#%%
+def train_score_model(model, optimizer, loss_fn, x, v, key, batch_size, num_batch_steps):
+    """
+    Run num_batch_steps of opt_step, shuffling data each epoch.
+    Returns list of loss values.
+    """
+    num_samples = x.shape[0]
+    losses = []
+    batch_count = 0
+    for step in range(num_batch_steps):
+        key, subkey = jax.random.split(key)
+        # Shuffle data
+        perm = jax.random.permutation(subkey, num_samples)
+        x_shuffled = x[perm]
+        v_shuffled = v[perm]
+        # Mini-batch
+        start_idx = 0
+        while start_idx < num_samples:
+            end_idx = min(start_idx + batch_size, num_samples)
+            batch = (x_shuffled[start_idx:end_idx], v_shuffled[start_idx:end_idx])
+            key, subkey = jax.random.split(key)
+            loss = opt_step(model, optimizer, loss_fn, batch, subkey)
+            losses.append(loss)
+            start_idx = end_idx
+            batch_count += 1
+            if batch_count >= num_batch_steps:
+                return losses
+    return losses
+
+
+#%%
+x = x.reshape((num_particles, dx))
+model = MLPScoreModel(dx, dv, hidden_dims=(1024,1024))
+key = jax.random.PRNGKey(0)
+optimizer = nnx.Optimizer(model, optax.adamw(1e-3))
+div_mode = 'approximate_rademacher'
+loss_fn = lambda model, batch, key: implicit_score_matching_loss(model, batch[0], batch[1], key=key, div_mode=div_mode)
+
+timings = {}
+for batch_size in [10, 1000, 10_000]:
+    for nbs in [0,1,2,5,10,20,50,100]:
+        print(f"batchsize {batch_size}, {nbs} batch steps")
+        num_batch_steps = nbs
+
+        out = train_score_model(model, optimizer, loss_fn, x, v, key, batch_size, num_batch_steps)
+        jax.block_until_ready(out)
+
+        start = time.time()
+        out = train_score_model(model, optimizer, loss_fn, x, v, key, batch_size, num_batch_steps)
+        jax.block_until_ready(out)
+        end = time.time()
+        print(f"execution time: {(end-start):.4f} s")
+        timings[(batch_size, nbs)] = end-start
+
+import matplotlib.pyplot as plt
+
+batch_sizes = sorted(set(k[0] for k in timings.keys()))
+nbs_values = sorted(set(k[1] for k in timings.keys()))
+
+plt.figure(figsize=(8, 6))
+for batch_size in batch_sizes:
+    times = [timings.get((batch_size, nbs), float('nan')) for nbs in nbs_values]
+    plt.plot(nbs_values, times, marker='o', label=f"batch_size={batch_size}")
+
+plt.xlabel("num_batch_steps (nbs)")
+plt.ylabel("Execution time (s)")
+plt.title("Execution time vs num_batch_steps for different batch sizes")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+# %%
