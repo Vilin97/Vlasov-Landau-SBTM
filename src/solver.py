@@ -6,6 +6,7 @@ import optax
 from flax import nnx
 from functools import partial
 import jax.lax as lax
+import time
 
 @jax.jit
 def centered_mod(x, L):
@@ -80,7 +81,10 @@ def train_score_model(model, optimizer, loss_fn, x, v, key, batch_size, num_batc
 @nnx.jit(static_argnames='loss')
 def opt_step(model, optimizer, loss, batch, key=None):
     """Perform one step of optimization"""
-    loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
+    if key is None:
+        loss_value, grads = nnx.value_and_grad(loss)(model, batch)
+    else:
+        loss_value, grads = nnx.value_and_grad(loss)(model, batch, key)
     optimizer.update(grads)
     return loss_value
 
@@ -270,12 +274,12 @@ class Solver:
         self.E = evaluate_electric_field(rho, self.eta)
 
         # 4) Initialize training config for score model
-        lr = self.training_config.et("learning_rate", 1e-3)
+        lr = self.training_config.get("learning_rate", 1e-3)
         self.optimizer  = nnx.Optimizer(self.score_model, optax.adamw(lr))
         div_mode = self.training_config.get("div_mode", "approximate_rademacher")
         self.loss_fn = lambda model, batch, key: implicit_score_matching_loss(model, batch[0], batch[1], key=key, div_mode=div_mode)
         
-    def step(self, x, v, E, dt, key = None):
+    def step(self, x, v, E, dt, key = None, verbose=False):
         """
         Perform a single time step of the simulation.
         
@@ -301,10 +305,14 @@ class Solver:
         
         # 2. Update velocities (Vlasov + landau collision)
         v_new = v.at[:, 0].add(dt * E_at_particles)
+        
+        start = time.time()
         if C != 0:
             s = self.score_model(x, v)
             v_new = v_new - dt * collision(x, v, s, eta, C, gamma, box_length, num_cells)
-        
+        elapsed_collision = time.time() - start
+
+
         # 3. Update positions using projected velocities
         x_new = update_positions(x, v_new, dt, box_length)
         
@@ -312,11 +320,15 @@ class Solver:
         E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
         
         # 5. Train score network
+        start = time.time()
         if C != 0:
             assert key is not None, "Key must be provided for training the score model"
             batch_size = self.training_config.get("batch_size", 1024)
             num_batch_steps = self.training_config.get("num_batch_steps", 10)
             train_score_model(self.score_model, self.optimizer, self.loss_fn, x, v, key, batch_size, num_batch_steps)
-        
+        elapsed_training = time.time() - start
+        if verbose:
+            print(f"Collision time: {elapsed_collision:.4f}s, Training time: {elapsed_training:.4f}s")
+
         return x_new, v_new, E_new
     

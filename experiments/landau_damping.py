@@ -12,7 +12,7 @@ from src.score_model import MLPScoreModel
 from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
 from src.path import ROOT, DATA, PLOTS, MODELS
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 def visualize_results(solver, mesh, times, e_l2_norms):
@@ -103,8 +103,8 @@ k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 3       # Velocity dimension
 gamma = -dv
-C = 0
-qe = 1.
+C = 0.1
+qe = 1
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
 # Create a mesh
@@ -116,15 +116,16 @@ mesh = Mesh1D(box_length, num_cells)
 initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 
 # Create neural network model
-model = MLPScoreModel(dx, dv, hidden_dims=(64, ))
+hidden_dims = (1024,)
+model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
 
 # Number of particles for simulation
-num_particles = 10_000
+num_particles = 100_000
 
 # Define training configuration
 training_config = {
     "batch_size": 1000,
-    "num_epochs": 10, # initial training
+    "num_epochs": 1000, # initial training
     "abs_tol": 1e-3,
     "learning_rate": 1e-3,
     "num_batch_steps": 10  # at each step
@@ -134,16 +135,16 @@ cells = mesh.cells()
 eta = mesh.eta
 
 #%%
-print(f"N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
+print(f"C = {C}, N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
 solver = Solver(
     mesh=mesh,
     num_particles=num_particles,
     initial_density=initial_density,
     initial_nn=model,
     numerical_constants=numerical_constants,
-    seed=seed
+    seed=seed,
+    training_config=training_config
 )
-solver.training_config = training_config
 x0, v0, E0 = solver.x, solver.v, solver.E
 
 box_length = mesh.box_lengths[0]
@@ -156,20 +157,20 @@ plt.show()
 
 #%%
 # Train and save the initial model
-path = os.path.expanduser(f'~/Vlasov-Landau-SBTM/data/score_models/landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}')
+epochs = solver.training_config["num_epochs"]
+path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
 if not os.path.exists(path):
-    train_initial_model(model, x0, v0, initial_density,training_config,verbose=True)
+    train_initial_model(model, x0, v0, initial_density,solver.training_config,verbose=True)
     model.save(path)
 
 #%%
-path = os.path.expanduser(f'~/Vlasov-Landau-SBTM/data/score_models/landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}')
 solver.score_model.load(path)
 
 #%%
 "Solve"
 # Simulation parameters
-final_time = 10.0 # set to 10 later
-dt = 0.02
+final_time = 20.0
+dt = 0.01
 num_steps = int(final_time / dt)
 
 # Arrays to store metrics over time
@@ -183,10 +184,11 @@ e_l2_norms[0] = jnp.sqrt((jnp.sum(solver.E**2) * solver.eta))[0]
 print("Running simulation...")
 x, v, E = solver.x, solver.v, solver.E
 
+key = jax.random.PRNGKey(seed)
 for step in tqdm(range(num_steps), desc="Solving"):
     # Perform a single time step
-    
-    x, v, E = solver.step(x, v, E, dt)
+    key, subkey = jax.random.split(key)
+    x, v, E = solver.step(x, v, E, dt, key=subkey)
     
     # Calculate metrics
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
