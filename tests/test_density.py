@@ -1,6 +1,6 @@
 import unittest
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 import numpy as np
 import sys
 import os
@@ -19,7 +19,7 @@ class TestDensity(unittest.TestCase):
             density.density(0.0, 0.0)
             
         # Test sample method raises NotImplementedError
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
         with self.assertRaises(NotImplementedError):
             density.sample(key)
             
@@ -60,7 +60,7 @@ class TestCosineNormal(unittest.TestCase):
         self.alpha = 0.01
         self.k = 0.5
         self.density = CosineNormal(alpha=self.alpha, k=self.k)
-        self.key = jrandom.PRNGKey(42)
+        self.key = jr.PRNGKey(42)
         
     def test_init(self):
         """Test initialization of CosineNormal."""
@@ -125,7 +125,7 @@ class TestRejectionSample(unittest.TestCase):
     
     def test_uniform_sampling(self):
         """Test rejection sampling from a uniform distribution."""
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
         
         # Define a uniform density on [0, 1]
         def uniform_density(x):
@@ -136,7 +136,7 @@ class TestRejectionSample(unittest.TestCase):
         # Sample multiple points
         samples = jnp.array([
             rejection_sample(k, uniform_density, domain, max_density=1.0) 
-            for k in jrandom.split(key, 100)
+            for k in jr.split(key, 100)
         ])
         
         # Check samples are within domain
@@ -154,7 +154,7 @@ class TestRejectionSample(unittest.TestCase):
         
     def test_max_density_estimation(self):
         """Test that max_density is estimated correctly if not provided."""
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
         
         # Define a simple density function with known maximum
         def parabola_density(x):
@@ -164,7 +164,7 @@ class TestRejectionSample(unittest.TestCase):
         
         # Sample with and without providing max_density
         sample_with_max = rejection_sample(key, parabola_density, domain, max_density=1.0)
-        sample_without_max = rejection_sample(jrandom.fold_in(key, 1), parabola_density, domain)
+        sample_without_max = rejection_sample(jr.fold_in(key, 1), parabola_density, domain)
         
         # Both should be valid samples in the domain
         self.assertTrue(0 <= sample_with_max <= 1)

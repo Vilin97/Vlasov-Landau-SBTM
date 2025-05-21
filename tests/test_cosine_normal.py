@@ -1,7 +1,7 @@
 #%%
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 from src import density as density_module
@@ -17,7 +17,7 @@ dv = 2        # Velocity dimension
 sample_size = 1000  # Number of samples to generate
 
 # Initialize random key
-key = jrandom.PRNGKey(42)
+key = jr.PRNGKey(42)
 
 # Initialize CosineNormal density
 density = density_module.CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)

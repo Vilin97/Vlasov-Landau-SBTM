@@ -1,12 +1,12 @@
 #%%
-import jax.random as jrandom
+import jax.random as jr
 import jax.numpy as jnp
 from jax import vmap
 from tqdm import tqdm
 
 def uniform_sample(domain):
     def proposal_sample(key, num_samples=1):
-        return jrandom.uniform(key, minval=domain[0], maxval=domain[1], shape=(num_samples,))
+        return jr.uniform(key, minval=domain[0], maxval=domain[1], shape=(num_samples,))
     return proposal_sample
 
 def uniform_density(domain):
@@ -39,7 +39,7 @@ def rejection_sample(key, density_fn, domain, max_ratio=None, num_samples=1, ver
         print(f"Domain: {domain}")
         print(f"Max ratio: {max_ratio:.2f}")
     
-    key, key_propose, key_accept = jrandom.split(key, 3)
+    key, key_propose, key_accept = jr.split(key, 3)
     # sample twice the needed-in-expectation amount
     num_candidates = int(num_samples * max_ratio * 2)
     candidates = proposal_sample(key_propose, num_candidates)
@@ -47,7 +47,7 @@ def rejection_sample(key, density_fn, domain, max_ratio=None, num_samples=1, ver
     target_values = density_fn(candidates)
     
     # Accept with probability target/proposal/max_ratio
-    accepted = jrandom.uniform(key_accept, num_candidates) * max_ratio * proposal_values <= target_values
+    accepted = jr.uniform(key_accept, num_candidates) * max_ratio * proposal_values <= target_values
     samples = candidates[accepted]
     
     return samples[:num_samples]

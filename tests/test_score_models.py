@@ -1,7 +1,7 @@
 #%%
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
 from flax import nnx
@@ -205,7 +205,7 @@ def train_explicit_score_matching(train_state, x_data, v_data, true_scores,
     steps_per_epoch = n_samples // batch_size
     
     if key is None:
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
     
     losses = []
     batch_times = []  # Track time per batch
@@ -214,8 +214,8 @@ def train_explicit_score_matching(train_state, x_data, v_data, true_scores,
     start_time = time.time()
     
     for epoch in range(num_epochs):
-        key, subkey = jrandom.split(key)
-        perm = jrandom.permutation(subkey, n_samples)
+        key, subkey = jr.split(key)
+        perm = jr.permutation(subkey, n_samples)
         x_shuffled = x_data[perm]
         v_shuffled = v_data[perm]
         scores_shuffled = true_scores[perm]
@@ -286,7 +286,7 @@ def train_implicit_score_matching(train_state, x_data, v_data, true_scores=None,
     steps_per_epoch = n_samples // batch_size
     
     if key is None:
-        key = jrandom.PRNGKey(0)
+        key = jr.PRNGKey(0)
     
     implicit_losses = []
     explicit_losses = [] # Track explicit losses too
@@ -296,8 +296,8 @@ def train_implicit_score_matching(train_state, x_data, v_data, true_scores=None,
     start_time = time.time()
     
     for epoch in range(num_epochs):
-        key, subkey = jrandom.split(key)
-        perm = jrandom.permutation(subkey, n_samples)
+        key, subkey = jr.split(key)
+        perm = jr.permutation(subkey, n_samples)
         x_shuffled = x_data[perm]
         v_shuffled = v_data[perm]
         true_scores_shuffled = true_scores[perm] if true_scores is not None else None
@@ -312,7 +312,7 @@ def train_implicit_score_matching(train_state, x_data, v_data, true_scores=None,
             batch_idx = slice(i * batch_size, (i + 1) * batch_size)
             x_batch = x_shuffled[batch_idx]
             v_batch = v_shuffled[batch_idx]
-            key, subkey = jrandom.split(key)
+            key, subkey = jr.split(key)
             
             implicit_loss = train_step(optimizer, x_batch, v_batch, subkey)
             
@@ -574,7 +574,7 @@ def run_test(config):
     
     # Use config parameters instead of global constants
     density = CosineNormal(alpha=config["alpha"], k=config["k"], dx=dx, dv=dv)
-    key1, key2 = jrandom.split(jrandom.PRNGKey(config["random_seed"]))
+    key1, key2 = jr.split(jr.PRNGKey(config["random_seed"]))
     X, V = density.sample(key1, size=config["num_particles"])
     true_scores = density.score(X, V)
     
@@ -582,7 +582,7 @@ def run_test(config):
     print(f"True scores shape: {true_scores.shape}")
     
     # Create models using the nnx API directly
-    key_mlp, key_mlp_in_resnet, key_resnet, key_mlp_implicit, key_mlp_in_resnet_implicit, key_resnet_implicit = jrandom.split(key2, 6)
+    key_mlp, key_mlp_in_resnet, key_resnet, key_mlp_implicit, key_mlp_in_resnet_implicit, key_resnet_implicit = jr.split(key2, 6)
     
     # Create MLP models - separate instances for standalone and for ResNet
     mlp_model = MLPScoreModel(
@@ -590,7 +590,7 @@ def run_test(config):
         dv=dv,
         hidden_dims=config["hidden_dims"],
         activation=config["activation"],
-        seed=int(jrandom.randint(key_mlp, (), 0, 1000000))
+        seed=int(jr.randint(key_mlp, (), 0, 1000000))
     )
     
     # Create a separate MLP for the ResNet model
@@ -599,13 +599,13 @@ def run_test(config):
         dv=dv,
         hidden_dims=config["hidden_dims"],
         activation=config["activation"],
-        seed=int(jrandom.randint(key_mlp_in_resnet, (), 0, 1000000))
+        seed=int(jr.randint(key_mlp_in_resnet, (), 0, 1000000))
     )
     
     # Create ResNet model with the separate MLP
     resnet_model = ResNetScoreModel(
         mlp=mlp_in_resnet,  # Use the dedicated MLP
-        seed=int(jrandom.randint(key_resnet, (), 0, 1000000))
+        seed=int(jr.randint(key_resnet, (), 0, 1000000))
     )
     
     # Print model architecture information
@@ -622,7 +622,7 @@ def run_test(config):
         dv=dv,
         hidden_dims=config["hidden_dims"],
         activation=config["activation"],
-        seed=int(jrandom.randint(key_mlp_implicit, (), 0, 1000000))
+        seed=int(jr.randint(key_mlp_implicit, (), 0, 1000000))
     )
     
     # Create a separate MLP for the implicit ResNet model
@@ -631,12 +631,12 @@ def run_test(config):
         dv=dv,
         hidden_dims=config["hidden_dims"],
         activation=config["activation"],
-        seed=int(jrandom.randint(key_mlp_in_resnet_implicit, (), 0, 1000000))
+        seed=int(jr.randint(key_mlp_in_resnet_implicit, (), 0, 1000000))
     )
     
     resnet_model_implicit = ResNetScoreModel(
         mlp=mlp_in_resnet_implicit,  # Use the dedicated MLP for implicit training
-        seed=int(jrandom.randint(key_resnet_implicit, (), 0, 1000000))
+        seed=int(jr.randint(key_resnet_implicit, (), 0, 1000000))
     )
     
     mlp_state_implicit = create_train_state(mlp_model_implicit, config["learning_rate"], key_mlp_implicit, X[0:1], V[0:1])

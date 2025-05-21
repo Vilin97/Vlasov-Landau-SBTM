@@ -1,6 +1,6 @@
 from jax import grad, vmap
 from jax.scipy.stats import multivariate_normal
-import jax.random as jrandom
+import jax.random as jr
 import jax.numpy as jnp
 from flax import nnx
 from src.rejection_sample import rejection_sample
@@ -91,10 +91,10 @@ class CosineNormal(Density):
         """
         Returns: Tuple of (x, v) samples
         """
-        key_x, key_v = jrandom.split(key)
+        key_x, key_v = jr.split(key)
         
         # Sample velocity directly from multivariate normal distribution
-        v_samples = jrandom.multivariate_normal(key_v, self.mean, self.cov, shape=(size,))
+        v_samples = jr.multivariate_normal(key_v, self.mean, self.cov, shape=(size,))
         
         # Define the spatial density function
         def spatial_density(x):
@@ -111,3 +111,42 @@ class CosineNormal(Density):
         x_samples = x_samples.reshape(size, self.dx)
         
         return x_samples, v_samples
+
+class TwoStream(Density):
+    r"""
+    f₀(x,v)= (1+α cos(kx))/(2π) · [e^{-(v₁-c)²/2}+e^{-(v₁+c)²/2}] · ∏_{j≥2} e^{-vⱼ²/2}.
+    """
+    def __init__(self, *, α=1/200, k=1/5, c=2.4, dx=1, dv=2):
+        super().__init__()
+        if dx != 1:
+            raise NotImplementedError("dx must be 1")
+        self.α, self.k, self.c = α, k, c
+        self.dv = dv
+        self.domain_x = jnp.array([0.0, 2 * jnp.pi / self.k])   # periodic domain
+
+    # ── PDF ──────────────────────────────────────────────────────────
+    def density(self, x, v):
+        v1, v_rest = v[..., 0], v[..., 1:]
+        spatial = (1 + self.α * jnp.cos(self.k * x[..., 0])) / (2 * jnp.pi)
+        longi   = jnp.exp(-(v1 - self.c) ** 2 / 2) + jnp.exp(-(v1 + self.c) ** 2 / 2)
+        transv  = jnp.exp(-jnp.sum(v_rest ** 2, axis=-1) / 2)
+        return spatial * longi * transv
+
+    # ── sampling ─────────────────────────────────────────────────────
+    def sample(self, key, size):
+        kx, kv = jr.split(key)
+        # x  — rejection sampling on spatial part
+        def g(u):  # un-normalised density on x
+            return (1 + self.α * jnp.cos(self.k * u)) / (2 * jnp.pi)
+        x = rejection_sample(kx, g, self.domain_x, num_samples=size)[:, None]
+
+        # v₁ — equal-weight mixture ½𝒩(c,1)+½𝒩(−c,1)
+        kv1, kvrest, ksign = jr.split(kv, 3)
+        sign = jr.choice(ksign, jnp.array([1.0, -1.0]), shape=(size, 1))
+        v1   = sign * self.c + jr.normal(kv1, shape=(size, 1))
+
+        # v₂,…,v_{dv}  — i.i.d. 𝒩(0,1)
+        v_rest = jr.normal(kvrest, shape=(size, self.dv - 1))
+
+        v = jnp.concatenate([v1, v_rest], axis=1)
+        return x, v

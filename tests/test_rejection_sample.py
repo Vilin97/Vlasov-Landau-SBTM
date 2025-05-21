@@ -1,7 +1,7 @@
 import unittest
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
@@ -20,7 +20,7 @@ class TestRejectionSample(unittest.TestCase):
     
     def test_uniform_sampling(self):
         """Test rejection sampling from a uniform distribution."""
-        key = jrandom.PRNGKey(42)
+        key = jr.PRNGKey(42)
         domain = jnp.array([0.0, 1.0])
         
         # Generate samples 
@@ -41,7 +41,7 @@ class TestRejectionSample(unittest.TestCase):
     
     def test_gaussian_sampling(self):
         """Test rejection sampling from a Gaussian distribution."""
-        key = jrandom.PRNGKey(42)
+        key = jr.PRNGKey(42)
         mu, sigma = 0.0, 1.0
         
         # Gaussian density function
@@ -62,7 +62,7 @@ class TestRejectionSample(unittest.TestCase):
     
     def test_with_known_max_ratio(self):
         """Test rejection sampling with a provided max_ratio value."""
-        key = jrandom.PRNGKey(42)
+        key = jr.PRNGKey(42)
         
         # Simple triangular density function
         def triangular_density(x):
@@ -86,7 +86,7 @@ class TestRejectionSample(unittest.TestCase):
     
     def test_with_nonuniform_proposal(self):
         """Test rejection sampling using a non-uniform proposal distribution."""
-        key = jrandom.PRNGKey(42)
+        key = jr.PRNGKey(42)
         
         # Target: Standard Gaussian
         mu_target, sigma_target = 0.0, 1.0
@@ -103,7 +103,7 @@ class TestRejectionSample(unittest.TestCase):
         
         # Create proposal sampling function that draws from the Gaussian proposal
         def proposal_sample(key):
-            return mu_proposal + sigma_proposal * jrandom.normal(key)
+            return mu_proposal + sigma_proposal * jr.normal(key)
         
         # Bundle proposal as (sample_fn, density_fn)
         proposal = (proposal_sample, proposal_density)
@@ -125,7 +125,7 @@ class TestRejectionSample(unittest.TestCase):
     
     def test_single_sample(self):
         """Test that when num_samples=1, a single sample is returned."""
-        key = jrandom.PRNGKey(42)
+        key = jr.PRNGKey(42)
         
         def uniform_density(x):
             return jnp.ones_like(x)
@@ -146,7 +146,7 @@ def visualize_samples():
     Visualize the samples (not a test, but useful for debugging).
     Run this separately, not as part of automated testing.
     """
-    key = jrandom.PRNGKey(42)
+    key = jr.PRNGKey(42)
     
     # Gaussian density function
     mu, sigma = 0.0, 1.0

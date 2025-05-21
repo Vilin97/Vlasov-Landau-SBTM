@@ -1,7 +1,7 @@
 #%%
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 
 from functools import partial
 import time
@@ -178,17 +178,17 @@ eta = box_length / num_cells
 cells = (jnp.arange(num_cells) + 0.5) * eta
 
 # sample initial velocity
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v0 = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v0 = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
 
 # Sample initial positions with rejection sampling
-x0 = jrandom.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
+x0 = jr.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
 
 # Compute initial electric field
 rho = evaluate_charge_density(x0, cells, eta, box_length)
 E0 = jnp.cumsum(rho - jnp.mean(rho)) * eta
 
-s = jrandom.normal(jrandom.PRNGKey(0), (num_particles, dv))
+s = jr.normal(jr.PRNGKey(0), (num_particles, dv))
 
 # %%
 "Benchmark collision operators"
@@ -236,9 +236,9 @@ def update_electric_field_old(E, cells, x, v, eta, dt, box_length):
 "Benchmark electric field evaluation and update"
 
 num_particles = 1_000_000
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v0 = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
-x0 = jrandom.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v0 = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
+x0 = jr.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
 
 
 E1 = evaluate_field_at_particles_old(x0, cells, E0, eta, box_length)
@@ -284,9 +284,9 @@ print(f"evaluate_charge_density time: {end2 - start2:.4f} s")
 
 
 num_particles = 10_000
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v0 = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
-x0 = jrandom.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v0 = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
+x0 = jr.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
 
 # Ensure arrays are on GPU
 x0_gpu = x0
@@ -321,9 +321,9 @@ print("Max abs diff (GPU vs CPU):", jnp.max(jnp.abs(c_gpu - c_cpu)))
 
 
 num_particles = 1_000_000
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v0 = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
-x0 = jrandom.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v0 = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
+x0 = jr.uniform(key_x, (num_particles,), minval=0, maxval=box_length)
 
 # Ensure arrays are on GPU
 x0_gpu = x0
@@ -454,9 +454,9 @@ seed = 42
 box_length = 1
 model = MLPScoreModel(dx, dv, hidden_dims=(64,))
 num_particles = 1_000_000
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
-x = jrandom.uniform(key_x, (num_particles,1), minval=0, maxval=box_length)
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
+x = jr.uniform(key_x, (num_particles,1), minval=0, maxval=box_length)
 
 for div_mode in ['forward', 'reverse']:
     print(f"Testing divergence mode: {div_mode}")
@@ -594,9 +594,9 @@ seed = 42
 box_length = 1
 model = MLPScoreModel(dx, dv, hidden_dims=(64,))
 num_particles = 1_000_00
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
-x = jrandom.uniform(key_x, (num_particles, dx), minval=0, maxval=box_length)
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,))
+x = jr.uniform(key_x, (num_particles, dx), minval=0, maxval=box_length)
 
 for div_mode in ['forward', 'reverse', 'approximate_gaussian', 'approximate_rademacher', 'denoised']:
     print(f"Testing divergence mode: {div_mode}")

@@ -3,7 +3,7 @@
 
 import jax
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import seaborn as sns
@@ -14,16 +14,16 @@ def rejection_sample(key, density_fn, domain, max_value, num_samples=1):
     domain_width = domain[1] - domain[0]
     proposal_fn = lambda x: jnp.where((x >= domain[0]) & (x <= domain[1]), 1.0 / domain_width, 0.0)
     max_ratio = max_value / (1.0 / domain_width) * 1.2 # 20% margin
-    key, key_propose, key_accept = jrandom.split(key, 3)
+    key, key_propose, key_accept = jr.split(key, 3)
 
     # sample twice the needed-in-expectation amount
     num_candidates = int(num_samples * max_ratio * 2)
-    candidates = jrandom.uniform(key_propose, minval=domain[0], maxval=domain[1], shape=(num_candidates,))
+    candidates = jr.uniform(key_propose, minval=domain[0], maxval=domain[1], shape=(num_candidates,))
     proposal_values = proposal_fn(candidates)
     target_values = density_fn(candidates)
     
     # Accept with probability target/(proposal * max_ratio)
-    accepted = jrandom.uniform(key_accept, num_candidates) * max_ratio * proposal_values <= target_values
+    accepted = jr.uniform(key_accept, num_candidates) * max_ratio * proposal_values <= target_values
     samples = candidates[accepted]
     
     return samples[:num_samples]
@@ -135,8 +135,8 @@ eta = box_length / num_cells
 cells = (jnp.arange(num_cells) + 0.5) * eta
 
 # sample initial velocity
-key_v, key_x = jrandom.split(jrandom.PRNGKey(seed), 2)
-v = jrandom.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(num_particles,)).reshape((num_particles, dv))
 
 # Sample initial positions with rejection sampling
 def spatial_density(x):
@@ -227,9 +227,9 @@ plt.show()
 
 # Downsample for plotting
 num_plot = 10_000
-key_plot = jrandom.PRNGKey(123)
-idx0 = jrandom.choice(key_plot, x0.shape[0], shape=(num_plot,), replace=False)
-idx = jrandom.choice(jrandom.PRNGKey(456), x.shape[0], shape=(num_plot,), replace=False)
+key_plot = jr.PRNGKey(123)
+idx0 = jr.choice(key_plot, x0.shape[0], shape=(num_plot,), replace=False)
+idx = jr.choice(jr.PRNGKey(456), x.shape[0], shape=(num_plot,), replace=False)
 
 # Downsampled particles for plotting
 x0_plot = x0[idx0]
