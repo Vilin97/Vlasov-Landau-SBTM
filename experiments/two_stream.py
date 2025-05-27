@@ -6,6 +6,10 @@ import os
 import numpy as np
 from tqdm import tqdm, trange
 from matplotlib import gridspec
+import time
+
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.mesh import Mesh1D
 from src.density import CosineNormal, TwoStream
@@ -18,7 +22,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 example_name = "two_stream"
 
 #%%
-# Set random seed for reproducibility
+"Initialize constants"
 seed = 42
 
 # Set constants
@@ -32,32 +36,36 @@ numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 256
+num_cells = 1000
 mesh = Mesh1D(box_length, num_cells)
+
+# Number of particles for simulation
+num_particles = 10**6
 
 # Create initial density distribution
 initial_density = TwoStream(alpha=alpha, k=k, c=c, dx=dx, dv=dv)
 
 # Create neural network model
-hidden_dims = (1024,)
-model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
+hidden_dims = (1024,1024)
+# model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
+model = None
 
-# Number of particles for simulation
-num_particles = 1_000_000
 
 # Define training configuration
+gd_steps = 40
 training_config = {
     "batch_size": 1000,
     "num_epochs": 1000, # initial training
-    "abs_tol": 1e-3,
-    "learning_rate": 1e-3,
-    "num_batch_steps": 0  # at each step
+    "abs_tol": 2e-4,
+    "learning_rate": 2e-4,
+    "num_batch_steps": gd_steps  # at each step
 }
 
 cells = mesh.cells()
 eta = mesh.eta
 
 #%%
+"Initialize the solver"
 print(f"C = {C}, N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
 solver = Solver(
     mesh=mesh,
@@ -79,20 +87,26 @@ plt.legend()
 plt.show()
 
 #%%
-# Train and save the initial model
-epochs = solver.training_config["num_epochs"]
-path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-if not os.path.exists(path):
-    train_initial_model(model, x0, v0, initial_density,solver.training_config,verbose=True)
-    model.save(path)
+"Train and save the initial model"
+# epochs = solver.training_config["num_epochs"]
+# path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+# if not os.path.exists(path):
+#     train_initial_model(model, x0, v0, initial_density,solver.training_config,verbose=True)
+#     model.save(path)
 
-#%%
-solver.score_model.load(path)
+# time.sleep(1)  # wait for the model to be saved
+
+# #%%
+# "Load the initial model"
+# epochs = solver.training_config["num_epochs"]
+# path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+# solver.score_model.load(path)
 
 #%%
 "Solve"
 # ── simulation parameters ──────────────────────────────────────────────
 final_time, dt = 50.0, 0.05
+example_path = f"{example_name}_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_T{final_time}_dt{dt}_N{num_particles}_cells{num_cells}_gd{gd_steps}"
 num_steps      = int(final_time / dt)
 times          = np.linspace(0.0, final_time, num_steps + 1)
 
@@ -110,16 +124,18 @@ E_L2 = np.empty_like(times)    # ‖E‖₂
 snap_idx  = [0, int(10/dt), int(20/dt), int(30/dt), int(40/dt), int(50/dt)]       # indices of times for montage
 x_snaps, v1_snaps = [], []
 
-# helper lambdas ---------------------------------------------------------
-kin_energy = lambda v: 0.5 * np.sum(np.asarray(v, np.float32)**2)
-ele_energy = lambda E: 0.5 * np.sum(np.asarray(E, np.float32)**2) * h
-entropy    = lambda w: -np.sum(w * np.log(w + 1e-12))
+# helper lambdas (JAX) --------------------------------------------------
+kin_energy = lambda v: 0.5 * jnp.sum(v.astype(jnp.float32)**2) * (box_length / num_particles)
+ele_energy = lambda E: 0.5 * jnp.sum(E.astype(jnp.float32)**2) * h
+entropy    = lambda w: -jnp.sum(w * jnp.log(w + 1e-12))
+E_L2_func  = lambda E: jnp.sqrt(jnp.sum(E.astype(jnp.float32)**2) * h)
 
 # ── initial diagnostics ────────────────────────────────────────────────
 x, v, E = solver.x, solver.v, solver.E
-EK[0], EE[0] = kin_energy(v), ele_energy(E)
-S[0]         = entropy(weights)
-E_L2[0]      = np.sqrt(np.sum(np.asarray(E, np.float32)**2) * h)
+EK[0]   = float(kin_energy(v))
+EE[0]   = float(ele_energy(E))
+S[0]    = float(entropy(jnp.array([weights])))
+E_L2[0] = float(E_L2_func(E))
 
 if 0 in snap_idx:
     x_snaps.append(np.asarray(x).ravel())
@@ -132,9 +148,10 @@ for n in trange(1, num_steps + 1, desc="time-integration"):
     key, sub = jax.random.split(key)
     x, v, E = solver.step(x, v, E, dt, key=sub)
 
-    EK[n], EE[n] = kin_energy(v), ele_energy(E)
-    S[n]         = entropy(weights)
-    E_L2[n]      = np.sqrt(np.sum(np.asarray(E, np.float32)**2) * h)
+    EK[n]   = float(kin_energy(v))
+    EE[n]   = float(ele_energy(E))
+    S[n]    = float(entropy(jnp.array([weights])))
+    E_L2[n] = float(E_L2_func(E))
 
     if n in snap_idx:
         x_snaps.append(np.asarray(x).ravel())
@@ -143,70 +160,102 @@ for n in trange(1, num_steps + 1, desc="time-integration"):
 solver.x, solver.v, solver.E = x, v, E  # save final state
 
 #%%
+# Save EK, EE, E_L2 to file
+statistics_dir = os.path.join(ROOT, "data", "statistics", example_path)
+os.makedirs(statistics_dir, exist_ok=True)
+np.save(os.path.join(statistics_dir, 'kinetic_energy.npy'), EK)
+np.save(os.path.join(statistics_dir, 'electric_energy.npy'), EE)
+np.save(os.path.join(statistics_dir, 'electric_field_norm.npy'), E_L2)
+
+#%%
 "Plotting"
+def plot_electric_field_norm(times, e_l2_norms, example_path, PLOTS):
+    plt.figure(figsize=(8, 5))
+    plt.plot(times, e_l2_norms, label='||E||_2')
+
+    plt.xlabel('Time')
+    plt.ylabel('||E||_2')
+    plt.yscale('log')
+    plt.title(example_path)
+    plt.legend()
+
+    # Ensure the directory exists before saving
+    save_dir = os.path.join(PLOTS, "electric_field_norm")
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, f"{example_path}.png"), dpi=300)
+
+    plt.show()
+
 def visualize_results(times, EK, EE, S, *, example_name="two_stream"):
-    """Fig-7 style plot using scalar histories only."""
     ET = EK + EE
     plt.figure(figsize=(10, 8))
     gs = gridspec.GridSpec(2, 2)
     ax1, ax2, ax3, ax4 = [plt.subplot(g) for g in gs]
 
-    ax1.plot(times, ET, '*'); ax1.set_title("Total energy")
-    ax2.plot(times, EK, 'o'); ax2.set_title("Kinetic energy")
-    ax3.plot(times, EE, 's'); ax3.set_title("Electric energy")
-    ax4.plot(times, S,  'd'); ax4.set_title("Entropy")
+    ax1.plot(times, ET); ax1.set_title("Total energy")
+    ax2.plot(times, EK); ax2.set_title("Kinetic energy")
+    ax3.plot(times, EE); ax3.set_title("Electric energy")
+    ax4.plot(times, S ); ax4.set_title("Entropy (WIP)")
 
     for ax in (ax1, ax2, ax3, ax4):
         ax.set_xlabel('t'); ax.grid(alpha=.3)
 
     plt.tight_layout()
     os.makedirs(PLOTS, exist_ok=True)
-    plt.show()
     plt.savefig(os.path.join(PLOTS, f"{example_name}_energy_entropy.png"), dpi=300)
+    plt.show()
     plt.close()
 
-def plot_phase_space_evolution(xs, vs, L, times, R=6,
+def plot_phase_space_evolution(xs, vs, L, times,
                                vmax=6, nbins_x=128, nbins_v=128,
                                cmap="jet",
-                               example_name="two_stream"):
+                               example_name="two_stream", num_plot_particles = 100_000):
     """
     xs, vs : list/array with length len(times); each entry shape (N,)
     L      : fundamental period in x
+    Only 10^5 particles are used for plotting.
     """
     nt     = len(times)
     fig_h  = nt * 3
     plt.figure(figsize=(6, fig_h))
 
     for i, (t, x, v) in enumerate(zip(times, xs, vs)):
-        # replicate x to show R copies
-        x_rep = jnp.concatenate([x + n*L for n in range(R)])
-        v_rep = jnp.tile(v, R)
+        N = x.shape[0]
+        if N > num_plot_particles:
+            idx = np.random.choice(N, num_plot_particles, replace=False)
+            x_plot = x[idx]
+            v_plot = v[idx]
+        else:
+            x_plot = x
+            v_plot = v
 
         ax = plt.subplot(nt, 1, i+1)
-        H, xe, ve = np.histogram2d(x_rep, v_rep,
-                                   bins=[nbins_x*R, nbins_v],
-                                   range=[[0, R*L], [-vmax, vmax]],
+        H, xe, ve = np.histogram2d(x_plot, v_plot,
+                                   bins=[nbins_x, nbins_v],
+                                   range=[[0, L], [-vmax, vmax]],
                                    density=True)
         ax.imshow(H.T, origin='lower', aspect='auto',
-                  extent=[0, R*L, -vmax, vmax], cmap=cmap)
+                  extent=[0, L, -vmax, vmax], cmap=cmap)
         ax.set_ylabel(r"$v_x$")
-        ax.set_xlim(0, R*L); ax.set_ylim(-vmax, vmax)
-        ax.set_xticks(np.arange(0, R*L+0.1, 2*np.pi))
+        ax.set_xlim(0, L); ax.set_ylim(-vmax, vmax)
+        ax.set_xticks(np.arange(0, L+0.1, 2*np.pi))
         if i==0:
-            ax.set_title(rf"$C=0$,   t={t}")
+            ax.set_title(rf"$C={C}$,   t={t}")
         else:
             ax.text(0.02,0.90,rf"$t={t}$", transform=ax.transAxes,
                     ha='left', va='center', fontsize=10,
                     bbox=dict(boxstyle="round,pad=0.2", fc="w", ec="none"))
     plt.xlabel("x")
     plt.tight_layout()
-    plt.show()
     plt.savefig(os.path.join(PLOTS, f"{example_name}_phase_space.png"), dpi=300)
+    plt.show()
     plt.close()
 
 #%%
+plot_electric_field_norm(times, E_L2, example_path, PLOTS)
 visualize_results(times, EK, EE, S)
 #%%
 plot_phase_space_evolution(x_snaps, v1_snaps,
                            L=mesh.box_lengths[0],
                            times=times[list(snap_idx)])
+# %%

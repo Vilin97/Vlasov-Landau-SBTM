@@ -140,7 +140,7 @@ eta = mesh.eta
 
 #%%
 "Initialize the solver"
-print(f"C = {C}, N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
+print(f"C = {C}, alpha={alpha}, N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
 solver = Solver(
     mesh=mesh,
     num_particles=num_particles,
@@ -210,64 +210,66 @@ stats_filename = f'electric_field_norm.npy'
 np.save(os.path.join(statistics_dir, stats_filename), e_l2_norms)
 
 # %%
-# Load and plot the electric field norm over time with predicted curve
-loaded_e_l2_norms = np.load(os.path.join(statistics_dir, stats_filename))
-plt.figure(figsize=(8, 5))
-plt.plot(times, loaded_e_l2_norms, label='||E||_2')
+def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLOTS):
+    """
+    Load and plot the electric field norm over time with predicted curve and maxima fit.
+    """
+    plt.figure(figsize=(8, 5))
+    plt.plot(times, loaded_e_l2_norms, label='||E||_2')
 
-# Predicted curve
-t_grid = jnp.linspace(0, times[-1], len(times))
-k = solver.numerical_constants["k"]
-C = solver.numerical_constants["C"]
-prefactor = -1/(k**3) * jnp.sqrt(jnp.pi/8) * jnp.exp(-1/(2*k**2) - 1.5)
-prefactor -= C * jnp.sqrt(2/(9*jnp.pi))
-predicted = jnp.exp(t_grid * prefactor)
-predicted *= loaded_e_l2_norms[0] / predicted[0]
-gamma = prefactor
-plt.plot(t_grid, predicted, 'r--', label=fr'$e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
+    # Predicted curve
+    t_grid = jnp.linspace(0, times[-1], len(times))
+    k = solver.numerical_constants["k"]
+    C = solver.numerical_constants["C"]
+    prefactor = -1/(k**3) * jnp.sqrt(jnp.pi/8) * jnp.exp(-1/(2*k**2) - 1.5)
+    prefactor -= C * jnp.sqrt(2/(9*jnp.pi))
+    predicted = jnp.exp(t_grid * prefactor)
+    predicted *= loaded_e_l2_norms[0] / predicted[0]
+    gamma = prefactor
+    plt.plot(t_grid, predicted, 'r--', label=fr'$e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
 
-plt.xlabel('Time')
-plt.ylabel('||E||_2')
-plt.yscale('log')
-plt.title(example_path)
-plt.legend()
+    plt.xlabel('Time')
+    plt.ylabel('||E||_2')
+    plt.yscale('log')
+    plt.title(example_path)
+    plt.legend()
 
-# Set y-limits to min/max of the electric field norm plus a bit, ensuring positivity for log scale
-ymin = loaded_e_l2_norms[loaded_e_l2_norms > 0].min()
-ymax = loaded_e_l2_norms.max()
-plt.ylim(ymin * 0.95, ymax * 1.05)
+    # Set y-limits to min/max of the electric field norm plus a bit, ensuring positivity for log scale
+    ymin = loaded_e_l2_norms[loaded_e_l2_norms > 0].min()
+    ymax = loaded_e_l2_norms.max()
+    plt.ylim(ymin * 0.95, ymax * 1.05)
 
-# Find all local maxima for t < 20 and plot a straight line through them
+    # Find all local maxima for t < 20 and plot a straight line through them
+    mask = times < 20
+    norms_masked = loaded_e_l2_norms[mask]
+    times_masked = times[mask]
 
-mask = times < 20
-norms_masked = loaded_e_l2_norms[mask]
-times_masked = times[mask]
+    # Find local maxima indices
+    maxima_indices = argrelextrema(norms_masked, np.greater, order=40)[0]
+    maxima_times = times_masked[maxima_indices]
+    maxima_values = norms_masked[maxima_indices]
 
-# Find local maxima indices
-maxima_indices = argrelextrema(norms_masked, np.greater, order=40)[0]
-maxima_times = times_masked[maxima_indices]
-maxima_values = norms_masked[maxima_indices]
+    # Plot maxima points
+    plt.scatter(maxima_times, maxima_values, color='g', marker='o')
 
-# Plot maxima points
-plt.scatter(maxima_times, maxima_values, color='g', marker='o')
+    # Fit a straight line (in log space) through the maxima
+    if len(maxima_times) > 1:
+        coeffs = np.polyfit(maxima_times, np.log(maxima_values), 1)
+        fit_line = np.exp(coeffs[1] + coeffs[0] * times_masked)
+        plt.plot(times_masked, fit_line, 'g--', label=fr'$e^{{\beta t}}, \beta={coeffs[0]:.3f}$')
+        print(f"Decay rate from maxima fit: {coeffs[0]:.4f}")
 
-# Fit a straight line (in log space) through the maxima
-if len(maxima_times) > 1:
-    coeffs = np.polyfit(maxima_times, np.log(maxima_values), 1)
-    fit_line = np.exp(coeffs[1] + coeffs[0] * times_masked)
-    plt.plot(times_masked, fit_line, 'g--', label=fr'$e^{{\beta t}}, \beta={coeffs[0]:.3f}$')
-    # Optionally, print the slope (decay rate)
-    print(f"Decay rate from maxima fit: {coeffs[0]:.4f}")
+    plt.legend()
 
-plt.legend()
+    # Ensure the directory exists before saving
+    save_dir = os.path.join(PLOTS, "electric_field_norm")
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, f"{example_path}.png"), dpi=300)
 
-# Ensure the directory exists before saving
-save_dir = os.path.join(PLOTS, "electric_field_norm")
-os.makedirs(save_dir, exist_ok=True)
-plt.savefig(os.path.join(save_dir, f"{example_path}.png"), dpi=300)
+    plt.show()
 
-plt.show()
-
+#%%
+plot_electric_field_norm(times, e_l2_norms, example_path, solver, PLOTS)
 #%%
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms)
