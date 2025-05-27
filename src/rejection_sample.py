@@ -26,7 +26,7 @@ def estimate_max_ratio(density_fn, proposal_density, domain):
     return estimated_max
 
 #%%
-def rejection_sample(key, density_fn, domain, max_ratio=None, num_samples=1, verbose=False):
+def rejection_sample(key, density_fn, domain, max_ratio=None, num_samples=1, verbose=False, margin=0.1):
     "sample in parallel"
     
     proposal_sample, proposal_density = uniform_sample(domain), uniform_density(domain)
@@ -40,8 +40,8 @@ def rejection_sample(key, density_fn, domain, max_ratio=None, num_samples=1, ver
         print(f"Max ratio: {max_ratio:.2f}")
     
     key, key_propose, key_accept = jr.split(key, 3)
-    # sample twice the needed-in-expectation amount
-    num_candidates = int(num_samples * max_ratio * 2)
+    # sample more than the expected number, by a margin -- 10% by default
+    num_candidates = int(num_samples * max_ratio * (1 + margin))
     candidates = proposal_sample(key_propose, num_candidates)
     proposal_values = proposal_density(candidates)
     target_values = density_fn(candidates)

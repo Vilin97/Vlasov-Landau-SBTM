@@ -6,6 +6,9 @@ import os
 import numpy as np
 from tqdm import tqdm
 
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from src.mesh import Mesh1D
 from src.density import CosineNormal
 from src.score_model import MLPScoreModel
@@ -92,7 +95,7 @@ def visualize_results(solver, mesh, times, e_l2_norms, n_scatter=100_000):
     plt.show()
 
 #%%
-# Set random seed for reproducibility
+"Initialize parameters"
 seed = 42
 
 # Set constants
@@ -111,7 +114,7 @@ num_cells = 20000
 mesh = Mesh1D(box_length, num_cells)
 
 # Number of particles for simulation
-num_particles = 2*10**8 # can go up to ~10^8 before OOM
+num_particles = 3*10**8 # 10^8 takes ~16Gb of VRAM, collisionless
 
 # Create initial density distribution
 initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
@@ -136,6 +139,7 @@ cells = mesh.cells()
 eta = mesh.eta
 
 #%%
+"Initialize the solver"
 print(f"C = {C}, N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
 solver = Solver(
     mesh=mesh,
@@ -156,7 +160,7 @@ plt.plot(cells, E0, label='E')
 plt.legend()
 plt.show()
 
-# #%%
+#%%
 # # Train and save the initial model
 # epochs = solver.training_config["num_epochs"]
 # path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
@@ -231,7 +235,6 @@ plt.legend()
 # Set y-limits to min/max of the electric field norm plus a bit, ensuring positivity for log scale
 ymin = loaded_e_l2_norms[loaded_e_l2_norms > 0].min()
 ymax = loaded_e_l2_norms.max()
-yrange = ymax - ymin
 plt.ylim(ymin * 0.95, ymax * 1.05)
 
 # Find all local maxima for t < 20 and plot a straight line through them

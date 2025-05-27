@@ -93,8 +93,8 @@ class CosineNormal(Density):
         """
         key_x, key_v = jr.split(key)
         
-        # Sample velocity directly from multivariate normal distribution
-        v_samples = jr.multivariate_normal(key_v, self.mean, self.cov, shape=(size,))
+        # Sample velocity directly from standard normal (avoid cuSolver error)
+        v_samples = jr.normal(key_v, shape=(size, self.dv)) + self.mean
         
         # Define the spatial density function
         def spatial_density(x):
