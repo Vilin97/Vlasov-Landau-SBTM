@@ -98,7 +98,7 @@ def A(z, C, gamma):
 @partial(jax.jit, static_argnames='num_cells')
 def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     """
-    Q_i = (1/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
+    Q_i = (L/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
           with the linear-hat kernel ψ of width η, periodic on [0,L].
 
     Complexity O(N η/L)  (exact for the hat kernel).
@@ -147,7 +147,7 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     # ---- unsort back to original particle order ----------------------------
     rev = jnp.empty_like(order)
     rev = rev.at[order].set(jnp.arange(N))
-    return Q_sorted[rev]
+    return box_length * Q_sorted[rev]
 
 @jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
@@ -309,9 +309,9 @@ class Solver:
         start = time.time()
         if C != 0:
             s = self.score_model(x, v)
-            v_new = v_new - dt * collision(x, v, s, eta, C, gamma, box_length, num_cells)
+            collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
+            v_new = v_new - dt * collision_term
         elapsed_collision = time.time() - start
-
 
         # 3. Update positions using projected velocities
         x_new = update_positions(x, v_new, dt, box_length)
@@ -328,7 +328,8 @@ class Solver:
             train_score_model(self.score_model, self.optimizer, self.loss_fn, x, v, key, batch_size, num_batch_steps)
         elapsed_training = time.time() - start
         if verbose:
-            print(f"Collision time: {elapsed_collision:.4f}s, Training time: {elapsed_training:.4f}s")
+            # print(f"Collision time: {elapsed_collision:.4f}s, Training time: {elapsed_training:.4f}s")
+            print(f"Transport strength={dt * jnp.linalg.norm(E_at_particles)}, Collision strength={dt * jnp.linalg.norm(collision_term)}")
 
         return x_new, v_new, E_new
     

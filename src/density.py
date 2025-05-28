@@ -68,7 +68,8 @@ class CosineNormal(Density):
             raise NotImplementedError("log_density does not accept a batch of data")
         
         spatial_part = jnp.log(jnp.clip(1 + self.alpha * jnp.cos(self.k * x), a_min=1e-10))
-        velocity_part = multivariate_normal.logpdf(v, self.mean, self.cov)
+        # Manual logpdf for standard normal: -0.5 * (dv * log(2π) + v^T v)
+        velocity_part = -0.5 * (self.dv * jnp.log(2 * jnp.pi) + jnp.sum((v - self.mean) ** 2))
 
         return (spatial_part + velocity_part)[0]
     

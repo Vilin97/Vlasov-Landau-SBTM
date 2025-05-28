@@ -99,39 +99,39 @@ def visualize_results(solver, mesh, times, e_l2_norms, n_scatter=100_000):
 seed = 42
 
 # Set constants
-alpha = 0.7  # Perturbation strength
+alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 1       # Velocity dimension
+dv = 2       # Velocity dimension
 gamma = -dv
-C = 0
+C = 0.05
 qe = 1
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 20000
+num_cells = 1000
 mesh = Mesh1D(box_length, num_cells)
 
 # Number of particles for simulation
-num_particles = 3*10**8 # 10^8 takes ~16Gb of VRAM, collisionless
+num_particles = 10**6 # 10^8 takes ~16Gb of VRAM, collisionless
 
 # Create initial density distribution
 initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
 
 # Create neural network model
 hidden_dims = (1024,)
-# model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
-model = None
+model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
+# model = None
 
 
 # Define training configuration
-gd_steps = 0
+gd_steps = 10
 training_config = {
     "batch_size": 1000,
     "num_epochs": 1000, # initial training
-    "abs_tol": 1e-3,
-    "learning_rate": 1e-3,
+    "abs_tol": 1e-4,
+    "learning_rate": 1e-4,
     "num_batch_steps": gd_steps  # at each step
 }
 
@@ -161,21 +161,21 @@ plt.legend()
 plt.show()
 
 #%%
-# # Train and save the initial model
-# epochs = solver.training_config["num_epochs"]
-# path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-# if not os.path.exists(path):
-#     train_initial_model(model, x0, v0, initial_density,solver.training_config,verbose=True)
-#     model.save(path)
+# Train and save the initial model
+epochs = solver.training_config["num_epochs"]
+path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+if not os.path.exists(path):
+    train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
+    model.save(path)
 
-# #%%
-# solver.score_model.load(path)
+#%%
+solver.score_model.load(path)
 
 #%%
 "Solve"
 # Simulation parameters
 final_time = 60.0
-dt = 0.002
+dt = 0.01
 num_steps = int(final_time / dt)
 
 example_path = f"{example_name}_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_T{final_time}_dt{dt}_N{num_particles}_cells{num_cells}_gd{gd_steps}"
@@ -239,13 +239,13 @@ def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLO
     ymax = loaded_e_l2_norms.max()
     plt.ylim(ymin * 0.95, ymax * 1.05)
 
-    # Find all local maxima for t < 20 and plot a straight line through them
-    mask = times < 20
+    # Find all local maxima for t < ... and plot a straight line through them
+    mask = times < 10
     norms_masked = loaded_e_l2_norms[mask]
     times_masked = times[mask]
 
     # Find local maxima indices
-    maxima_indices = argrelextrema(norms_masked, np.greater, order=40)[0]
+    maxima_indices = argrelextrema(norms_masked, np.greater, order=1)[0]
     maxima_times = times_masked[maxima_indices]
     maxima_values = norms_masked[maxima_indices]
 

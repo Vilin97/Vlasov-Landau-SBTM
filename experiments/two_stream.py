@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.mesh import Mesh1D
 from src.density import CosineNormal, TwoStream
 from src.score_model import MLPScoreModel
-from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
+from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field, collision
 from src.path import ROOT, DATA, PLOTS, MODELS
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -30,7 +30,7 @@ alpha, k, c = 1/200, 1/5, 2.4
 dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 gamma = -dv
-C = 0
+C = 0.08
 qe = 1
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
@@ -47,12 +47,12 @@ initial_density = TwoStream(alpha=alpha, k=k, c=c, dx=dx, dv=dv)
 
 # Create neural network model
 hidden_dims = (1024,1024)
-# model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
-model = None
+model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
+# model = None
 
 
 # Define training configuration
-gd_steps = 40
+gd_steps = 10
 training_config = {
     "batch_size": 1000,
     "num_epochs": 1000, # initial training
@@ -88,24 +88,103 @@ plt.show()
 
 #%%
 "Train and save the initial model"
-# epochs = solver.training_config["num_epochs"]
-# path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-# if not os.path.exists(path):
-#     train_initial_model(model, x0, v0, initial_density,solver.training_config,verbose=True)
-#     model.save(path)
+epochs = solver.training_config["num_epochs"]
+path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+if not os.path.exists(path):
+    train_initial_model(model, x0, v0, initial_density,solver.training_config,verbose=True)
+    model.save(path)
 
-# time.sleep(1)  # wait for the model to be saved
+time.sleep(1)  # wait for the model to be saved
 
-# #%%
-# "Load the initial model"
-# epochs = solver.training_config["num_epochs"]
-# path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-# solver.score_model.load(path)
+#%%
+"Load the initial model"
+epochs = solver.training_config["num_epochs"]
+path = os.path.join(MODELS, f'{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+solver.score_model.load(path)
 
+#%%
+"Plot the learned score and the true score of initial_density (v1-v2 marginal)"
+
+x_fixed = jnp.zeros((1, dx))
+
+# Create a 2D grid of v values
+v1 = jnp.linspace(-8, 8, 100)
+v2 = jnp.linspace(-8, 8, 100)
+v1_grid, v2_grid = jnp.meshgrid(v1, v2)
+v_grid = jnp.stack([v1_grid.ravel(), v2_grid.ravel()], axis=-1)
+x_grid = jnp.repeat(x_fixed, v_grid.shape[0], axis=0)
+
+# Evaluate the density over the v grid
+pdf_vals = initial_density(x_grid, v_grid).reshape(v1_grid.shape)
+
+plt.figure(figsize=(5, 5))
+contour = plt.contourf(v1_grid, v2_grid, pdf_vals, levels=30, cmap='Greens')
+plt.scatter(v0[:10**3, 0], v0[:10**3, 1], c='k', s=1)
+
+# Choose random v points for score comparison
+rng = np.random.default_rng(2)
+rand_idx = rng.choice(v_grid.shape[0], size=12, replace=False)
+v_points = v0[rand_idx]
+x_points = x0[rand_idx]
+
+# Compute true and model scores at these points
+true_scores = initial_density.score(x_points, v_points)
+model_scores = solver.score_model(x_points, v_points)
+
+# Plot arrows for true and model scores
+for i, (vi, ts, ms) in enumerate(zip(v_points, true_scores, model_scores)):
+    plt.arrow(float(vi[0]), float(vi[1]), -float(ts[0]), -float(ts[1]), color='red', width=0.05, head_width=0.25, length_includes_head=True, label=r'$-\nabla \log f$ (true)' if i==0 else None)
+    plt.arrow(float(vi[0]), float(vi[1]), -float(ms[0]), -float(ms[1]), color='green', width=0.02, head_width=0.15, length_includes_head=True, label=r'$-s$ (learned)' if i==0 else None)
+    plt.scatter([float(vi[0])], [float(vi[1])], c='yellow', s=60, edgecolors='k', zorder=5)
+
+plt.xlabel("$v_1$")
+plt.ylabel("$v_2$")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+"Plot the learned score and the true score of initial_density (x-v1 marginal)"
+
+# Create a 2D grid of x and v1 values
+x1 = jnp.linspace(0, mesh.box_lengths[0], 100)
+v1 = jnp.linspace(-8, 8, 100)
+x1_grid, v1_grid = jnp.meshgrid(x1, v1)
+x_grid = x1_grid.ravel()[:, None]
+v_grid = jnp.zeros((x_grid.shape[0], dv))
+v_grid = v_grid.at[:, 0].set(v1_grid.ravel())
+
+# Evaluate the density over the x-v1 grid (with v2=0)
+pdf_vals = initial_density(x_grid, v_grid).reshape(x1_grid.shape)
+
+plt.figure(figsize=(6, 5))
+contour = plt.contourf(x1_grid, v1_grid, pdf_vals, levels=60, cmap='Blues')
+plt.scatter(x0[:10**3], v0[:10**3, 0], c='k', s=1)
+
+# Choose random points for score comparison in x-v1
+rng = np.random.default_rng(3)
+rand_idx = rng.choice(x_grid.shape[0], size=12, replace=False)
+x_points = x_grid[rand_idx]
+v_points = v_grid[rand_idx]
+
+# Compute true and model scores at these points
+true_scores = initial_density.score(x_points, v_points)
+model_scores = solver.score_model(x_points, v_points)
+
+# Plot arrows for true and model scores (projected onto x-v1)
+for i, (xi, vi, ts, ms) in enumerate(zip(x_points, v_points, true_scores, model_scores)):
+    plt.arrow(float(xi[0]), float(vi[0]), -float(ts[0]), -float(ts[1]), color='red', width=0.05, head_width=0.25, length_includes_head=True, label=r'$-\nabla \log f$ (true)' if i==0 else None)
+    plt.arrow(float(xi[0]), float(vi[0]), -float(ms[0]), -float(ms[1]), color='green', width=0.02, head_width=0.15, length_includes_head=True, label=r'$-s$ (learned)' if i==0 else None)
+    plt.scatter([float(xi[0])], [float(vi[0])], c='yellow', s=60, edgecolors='k', zorder=5)
+
+plt.xlabel("$x$")
+plt.ylabel("$v_1$")
+plt.legend()
+plt.tight_layout()
+plt.show()
 #%%
 "Solve"
 # ── simulation parameters ──────────────────────────────────────────────
-final_time, dt = 50.0, 0.05
+final_time, dt = 50, 0.1
 example_path = f"{example_name}_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_T{final_time}_dt{dt}_N{num_particles}_cells{num_cells}_gd{gd_steps}"
 num_steps      = int(final_time / dt)
 times          = np.linspace(0.0, final_time, num_steps + 1)
@@ -121,7 +200,7 @@ S   = np.empty_like(times)     # entropy
 E_L2 = np.empty_like(times)    # ‖E‖₂
 
 # phase-space snapshots
-snap_idx  = [0, int(10/dt), int(20/dt), int(30/dt), int(40/dt), int(50/dt)]       # indices of times for montage
+snap_idx = [int(final_time * frac / dt) for frac in [0, 0.2, 0.4, 0.6, 0.8, 1.0]]
 x_snaps, v1_snaps = [], []
 
 # helper lambdas (JAX) --------------------------------------------------
@@ -217,8 +296,11 @@ def plot_phase_space_evolution(xs, vs, L, times,
     """
     nt     = len(times)
     fig_h  = nt * 3
-    plt.figure(figsize=(6, fig_h))
+    fig, axes = plt.subplots(nt, 1, figsize=(6, fig_h), squeeze=False)
+    vmin, vmax_hist = None, None
 
+    # Compute all histograms to get global vmin/vmax for colorbar
+    Hs = []
     for i, (t, x, v) in enumerate(zip(times, xs, vs)):
         N = x.shape[0]
         if N > num_plot_particles:
@@ -229,13 +311,22 @@ def plot_phase_space_evolution(xs, vs, L, times,
             x_plot = x
             v_plot = v
 
-        ax = plt.subplot(nt, 1, i+1)
         H, xe, ve = np.histogram2d(x_plot, v_plot,
                                    bins=[nbins_x, nbins_v],
                                    range=[[0, L], [-vmax, vmax]],
                                    density=True)
-        ax.imshow(H.T, origin='lower', aspect='auto',
-                  extent=[0, L, -vmax, vmax], cmap=cmap)
+        Hs.append(H)
+        if vmin is None or H.min() < vmin:
+            vmin = H.min()
+        if vmax_hist is None or H.max() > vmax_hist:
+            vmax_hist = H.max()
+
+    ims = []
+    for i, (t, x, v) in enumerate(zip(times, xs, vs)):
+        ax = axes[i, 0]
+        im = ax.imshow(Hs[i].T, origin='lower', aspect='auto',
+                       extent=[0, L, -vmax, vmax], cmap=cmap, vmin=vmin, vmax=vmax_hist)
+        ims.append(im)
         ax.set_ylabel(r"$v_x$")
         ax.set_xlim(0, L); ax.set_ylim(-vmax, vmax)
         ax.set_xticks(np.arange(0, L+0.1, 2*np.pi))
@@ -246,7 +337,9 @@ def plot_phase_space_evolution(xs, vs, L, times,
                     ha='left', va='center', fontsize=10,
                     bbox=dict(boxstyle="round,pad=0.2", fc="w", ec="none"))
     plt.xlabel("x")
-    plt.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    # Add colorbar at the bottom
+    cbar = fig.colorbar(ims[0], ax=axes.ravel().tolist(), orientation='horizontal', fraction=0.05, pad=0.07, label="Density")
     plt.savefig(os.path.join(PLOTS, f"{example_name}_phase_space.png"), dpi=300)
     plt.show()
     plt.close()
@@ -255,7 +348,5 @@ def plot_phase_space_evolution(xs, vs, L, times,
 plot_electric_field_norm(times, E_L2, example_path, PLOTS)
 visualize_results(times, EK, EE, S)
 #%%
-plot_phase_space_evolution(x_snaps, v1_snaps,
-                           L=mesh.box_lengths[0],
-                           times=times[list(snap_idx)])
+plot_phase_space_evolution(x_snaps, v1_snaps, L=mesh.box_lengths[0], times=times[list(snap_idx)])
 # %%
