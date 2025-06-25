@@ -1,4 +1,6 @@
+import jax
 import jax.numpy as jnp
+from functools import partial
 from flax import nnx
 import orbax.checkpoint as ocp
 import os
@@ -78,7 +80,6 @@ class MLPScoreModel(nnx.Module):
         
         return outputs
 
-
 class ResNetScoreModel(nnx.Module):
     """ResNet-based implementation of a score model."""
     
@@ -145,3 +146,24 @@ class ResNetScoreModel(nnx.Module):
         outputs = self.mlp.final_layer(h)
         
         return outputs
+
+"KDE score model for 1D space and velocity"
+def psi_hat(u, eta, L=None):
+    if L is not None:                       # periodic distance
+        u = (u + 0.5 * L) % L - 0.5 * L
+    return jnp.maximum(0., 1. - jnp.abs(u) / eta) / eta
+
+@jax.jit
+def kde_score_hat(x, v, eta_x, eta_v, L=None):
+    """∇_v log f for 1-D (x,v) samples via KDE with hat kernels."""
+    eta_x, eta_v = map(jnp.asarray, (eta_x, eta_v))  # make them tracers
+    eps = 1e-12
+
+    def score_single(xi, vi):
+        def log_f(vi_):
+            w_x = psi_hat(xi - x, eta_x, L)          # (N,)
+            w_v = psi_hat(vi_ - v, eta_v)            # (N,)
+            return jnp.log(jnp.mean(w_x * w_v) + eps)
+        return jax.grad(log_f)(vi)                   # scalar grad
+
+    return jax.vmap(score_single)(x, v)              # (N,)

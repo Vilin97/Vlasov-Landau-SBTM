@@ -11,17 +11,19 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.mesh import Mesh1D
 from src.density import CosineNormal
-from src.score_model import MLPScoreModel
-from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field
+from src.score_model import MLPScoreModel, kde_score_hat
+from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field, collision
+import src.loss as loss
 from src.path import ROOT, DATA, PLOTS, MODELS
 from scipy.signal import argrelextrema
+import time
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 example_name = "landau_damping"
 
-def visualize_results(solver, mesh, times, e_l2_norms, n_scatter=100_000):
+def visualize_results(solver, mesh, times, e_l2_norms, n_scatter=100_000, save=True):
     """Visualize the results of the solver simulation."""
     
     plt.figure(figsize=(18, 10))
@@ -85,13 +87,15 @@ def visualize_results(solver, mesh, times, e_l2_norms, n_scatter=100_000):
     
     plt.tight_layout()
     
-    # Create plots directory if it doesn't exist
-    plots_dir = PLOTS
-    os.makedirs(plots_dir, exist_ok=True)
+    if save:
+        # Create plots directory if it doesn't exist
+        plots_dir = PLOTS
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # Save figure to plots directory
+        filename = f'{example_path}.png'
+        plt.savefig(os.path.join(plots_dir, filename))
     
-    # Save figure to plots directory
-    filename = f'{example_path}.png'
-    plt.savefig(os.path.join(plots_dir, filename))
     plt.show()
 
 #%%
@@ -102,19 +106,19 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 2       # Velocity dimension
+dv = 1       # Velocity dimension
 gamma = -dv
-C = 0.05
+C = 0.1
 qe = 1
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 1000
+num_cells = 512
 mesh = Mesh1D(box_length, num_cells)
 
 # Number of particles for simulation
-num_particles = 10**6 # 10^8 takes ~16Gb of VRAM, collisionless
+num_particles = 2**20 # 10^8 takes ~16Gb of VRAM, collisionless
 
 # Create initial density distribution
 initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
@@ -128,7 +132,7 @@ model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
 # Define training configuration
 gd_steps = 10
 training_config = {
-    "batch_size": 1000,
+    "batch_size": 1024,
     "num_epochs": 1000, # initial training
     "abs_tol": 1e-4,
     "learning_rate": 1e-4,
@@ -161,21 +165,71 @@ plt.legend()
 plt.show()
 
 #%%
+import jax, jax.numpy as jnp
+from jax import jit
+
+@jit
+def kde_score_hat_1d(v: jnp.ndarray, eta):
+    """
+    ∇_v log f(v) for a 1-D KDE with the hat kernel of width `eta`.
+    No x-dependence, O(N log N) time, O(N) memory, GPU-friendly.
+    """
+    v   = jnp.ravel(v)             # (N,)
+    eta = jnp.asarray(eta)         # JAX scalar is fine
+    N   = v.size
+
+    order   = jnp.argsort(v)
+    v_sort  = v[order]
+
+    pref = jnp.concatenate([jnp.array([0.0], v.dtype), jnp.cumsum(v_sort)])
+
+    L = jnp.searchsorted(v_sort, v_sort - eta, side="left")
+    R = jnp.searchsorted(v_sort, v_sort + eta, side="right")
+
+    win_len  = R - L
+    idx      = jnp.arange(N)
+    n_left   = idx - L
+    n_right  = R - idx - 1
+
+    sum_left  = pref[idx] - pref[L]
+    sum_right = pref[R] - pref[idx + 1]
+
+    num = (n_right - n_left) / (eta**2)                        # Σ ψ′
+    abs_sum = (n_left * v_sort - sum_left) + (sum_right - n_right * v_sort)
+    den = win_len / eta - abs_sum / (eta**2)                   # Σ ψ
+    score_sorted = num / (den + 1e-12)
+
+    rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
+    return score_sorted[rev]
+
+#%%
+scores = kde_score_hat_1d(v0, eta*30)
+
+# Sort v0 and corresponding scores for plotting
+sort_idx = np.argsort(v0[:10**5, 0])
+plt.plot(v0[:10**5][sort_idx], initial_density.score(x0, v0)[:10**5][sort_idx], label='Initial Density Score')
+kde_loss = jnp.sum((scores - initial_density.score(x0, v0).flatten())**2)/num_particles
+model_loss = jnp.sum((solver.score_model(x0, v0) - initial_density.score(x0, v0))**2)/num_particles
+plt.plot(v0[:10**5][sort_idx], scores[:10**5][sort_idx], label=f'KDE Score, Loss: {kde_loss:.4f}')
+plt.plot(v0[:10**5][sort_idx], solver.score_model(x0, v0)[:10**5][sort_idx], label=f'Score Model, Loss: {model_loss:.4f}')
+plt.legend()
+
+
+#%%
 # Train and save the initial model
 epochs = solver.training_config["num_epochs"]
 path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
 if not os.path.exists(path):
     train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
     model.save(path)
-
 #%%
 solver.score_model.load(path)
 
 #%%
 "Solve"
 # Simulation parameters
-final_time = 60.0
-dt = 0.01
+final_time = 15.0
+dt = 0.05
 num_steps = int(final_time / dt)
 
 example_path = f"{example_name}_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_T{final_time}_dt{dt}_N{num_particles}_cells{num_cells}_gd{gd_steps}"
@@ -183,9 +237,11 @@ example_path = f"{example_name}_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_T{final_tim
 # Arrays to store metrics over time
 times = np.linspace(0, final_time, num_steps+1)
 e_l2_norms = np.zeros(num_steps+1)
+implicit_losses = np.zeros(num_steps+1)
 
 # Calculate initial metrics
 e_l2_norms[0] = jnp.sqrt((jnp.sum(solver.E**2) * solver.eta))[0]
+# implicit_losses[0] = loss.implicit_score_matching_loss(solver.score_model, solver.x, solver.v, key=jax.random.PRNGKey(seed))
 
 # Run simulation for multiple steps and collect metrics
 print("Running simulation...")
@@ -195,10 +251,25 @@ key = jax.random.PRNGKey(seed)
 for step in tqdm(range(num_steps), desc="Solving"):
     # Perform a single time step
     key, subkey = jax.random.split(key)
-    x, v, E = solver.step(x, v, E, dt, key=subkey)
+    # x, v, E = solver.step(x, v, E, dt, key=subkey)
+
+    E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
+    
+    v_new = v.at[:, 0].add(dt * E_at_particles)
+    s = kde_score_hat_1d(v, eta*30)[:,None] # use KDE
+    collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
+    v_new = v_new - dt * collision_term
+
+    x_new = update_positions(x, v_new, dt, box_length)
+    E_new = update_electric_field(E, cells, x_new, v_new, eta, dt, box_length)
+
+    x = jnp.mod(x_new, box_length)  # Ensure periodic boundary conditions
+    v = v_new
+    E = E_new
     
     # Calculate metrics
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
+    # implicit_losses[step+1] = loss.implicit_score_matching_loss(solver.score_model, x, v, key=jax.random.PRNGKey(seed))
     
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
@@ -207,7 +278,7 @@ solver.x, solver.v, solver.E = x, v, E
 statistics_dir = os.path.join(ROOT, "data", "statistics", example_path)
 os.makedirs(statistics_dir, exist_ok=True)
 stats_filename = f'electric_field_norm.npy'
-np.save(os.path.join(statistics_dir, stats_filename), e_l2_norms)
+# np.save(os.path.join(statistics_dir, stats_filename), e_l2_norms)
 
 # %%
 def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLOTS):
@@ -217,16 +288,23 @@ def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLO
     plt.figure(figsize=(8, 5))
     plt.plot(times, loaded_e_l2_norms, label='||E||_2')
 
-    # Predicted curve
+    # Predicted collisional curve
     t_grid = jnp.linspace(0, times[-1], len(times))
     k = solver.numerical_constants["k"]
     C = solver.numerical_constants["C"]
     prefactor = -1/(k**3) * jnp.sqrt(jnp.pi/8) * jnp.exp(-1/(2*k**2) - 1.5)
-    prefactor -= C * jnp.sqrt(2/(9*jnp.pi))
-    predicted = jnp.exp(t_grid * prefactor)
-    predicted *= loaded_e_l2_norms[0] / predicted[0]
-    gamma = prefactor
-    plt.plot(t_grid, predicted, 'r--', label=fr'$e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
+    prefactor_collisional = prefactor - C * jnp.sqrt(2/(9*jnp.pi))
+    predicted_collisional = jnp.exp(t_grid * prefactor_collisional)
+    predicted_collisional *= loaded_e_l2_norms[0] / predicted_collisional[0]
+    gamma = prefactor_collisional
+    plt.plot(t_grid, predicted_collisional, 'r--', label=fr'$collisional: e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
+
+    # Predicted collisionless curve (C=0)
+    prefactor_collisionless = prefactor  # C=0
+    predicted_collisionless = jnp.exp(t_grid * prefactor_collisionless)
+    predicted_collisionless *= loaded_e_l2_norms[0] / predicted_collisionless[0]
+    gamma0 = prefactor_collisionless
+    plt.plot(t_grid, predicted_collisionless, 'b--', label=fr'$collisionless: e^{{\gamma_0 t}},\ \gamma_0 = {gamma0:.3f}$')
 
     plt.xlabel('Time')
     plt.ylabel('||E||_2')
@@ -272,4 +350,5 @@ def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLO
 plot_electric_field_norm(times, e_l2_norms, example_path, solver, PLOTS)
 #%%
 # Visualize results
-visualize_results(solver, mesh, times, e_l2_norms)
+visualize_results(solver, mesh, times, e_l2_norms, save=False)
+# %%

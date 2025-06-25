@@ -98,14 +98,16 @@ def A(z, C, gamma):
 @partial(jax.jit, static_argnames='num_cells')
 def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     """
-    Q_i = (L/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
+    Q_i = (L/N)² Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
           with the linear-hat kernel ψ of width η, periodic on [0,L].
 
     Complexity O(N η/L)  (exact for the hat kernel).
     """
-    x = x[:,0]
-    N, d = v.shape
-    M    = num_cells
+    x = x[:, 0]
+    N, d      = v.shape
+    M         = num_cells
+    # w_particle = box_length / N        # (= L/N)
+    w_particle = 1 / N        # (= L/N)
 
     # ---- bin & sort particles by cell --------------------------------------
     idx    = jnp.floor(x / eta).astype(jnp.int32) % M
@@ -127,10 +129,10 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
 
             def loop_over_particles(j, inner_acc):
                 xj, vj, sj = x_s[j], v_s[j], s_s[j]
-                w  = psi(xi - xj, eta, box_length)
+                ψ  = psi(xi - xj, eta, box_length)
                 dv = vi - vj
                 ds = si - sj
-                inner_acc += w * jnp.dot(A(dv, C, gamma), ds)
+                inner_acc += w_particle * ψ * jnp.dot(A(dv, C, gamma), ds)
                 return inner_acc
 
             acc = lax.fori_loop(start, end, loop_over_particles, acc)
@@ -140,14 +142,15 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
         for c in ((cell - 1) % M, cell, (cell + 1) % M):
             Q_i = loop_over_cell(c, Q_i)
 
-        return Q_i / N
+        return Q_i                            # no division by N here
 
     Q_sorted = jax.vmap(Q_single)(jnp.arange(N))
 
     # ---- unsort back to original particle order ----------------------------
     rev = jnp.empty_like(order)
     rev = rev.at[order].set(jnp.arange(N))
-    return box_length * Q_sorted[rev]
+    return w_particle * Q_sorted[rev]         # second factor of (L/N)
+
 
 @jax.jit
 def evaluate_charge_density(x, cells, eta, box_length, qe=1.0):
