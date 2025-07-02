@@ -80,10 +80,15 @@ def explicit_score_matching_loss(s, x_batch, v_batch, target_score_values):
         Mean squared error loss
     """
     # Compute predictions for all samples in the batch
-    predicted_scores = jax.vmap(s)(x_batch, v_batch)
+    predicted_scores = s(x_batch, v_batch)
+    # predicted_scores = jax.vmap(s)(x_batch, v_batch)
     
     # Compute mean squared error
     return jnp.mean(jnp.sum(jnp.square(predicted_scores - target_score_values), axis=-1))
+
+@jax.jit
+def mse(predictions, targets):
+    return jnp.sum(jnp.square(predictions - targets)) / predictions.shape[0]
 
 @nnx.jit
 def weighted_explicit_score_matching_loss(s, x_batch, v_batch, target_score_values, weighting):
@@ -113,46 +118,29 @@ def weighted_explicit_score_matching_loss(s, x_batch, v_batch, target_score_valu
     
     return jnp.mean(jax.vmap(weighted_loss)(x_batch, v_batch, target_score_values, weighting))
 
-@nnx.jit(static_argnames=['div_mode', 'n_samples'])
-def implicit_score_matching_loss(s, x_batch, v_batch, key=None, div_mode='approximate_rademacher', n_samples=100):
+@nnx.jit(static_argnames=['div_mode'])
+def implicit_score_matching_loss(s, x_batch, v_batch, key, div_mode='approximate_rademacher', n_samples: int = 4):
     """
-    Compute the implicit score matching loss for score function s(x,v)
-    1/n ∑ᵢ ||s(xᵢ,vᵢ)||^2 + 2 ∇ᵥ⋅s(xᵢ,vᵢ)
-    
-    Args:
-        s: Score model function that takes (x,v) and returns score
-        x_batch: Position batch of shape (batch_size, dx)
-        v_batch: Velocity batch of shape (batch_size, dv)
-        key: Optional JAX PRNGKey for stochastic estimators
-        div_mode: Mode for divergence computation: 'forward', 'reverse', 'approximate_gaussian', 'approximate_rademacher', 'denoised'
-        n_samples: Number of samples for stochastic divergence estimation
-    
-    Returns:
-        Implicit score matching loss
+    1/|B| ∑ (‖s(x,v)‖² + 2 div_v s(x,v))     with Hutchinson divergence.
+    One PRNG key → one ε-tensor shared across the batch (still unbiased).
     """
-    # Get the appropriate divergence function
-    div_fn = divergence_wrt_v(s, div_mode, n_samples)
-    
-    def compute_loss(x, v, key=None):
-        # Compute squared norm of score
+    assert div_mode == 'approximate_rademacher', "Only 'approximate_rademacher' divergence mode is currently implemented"
+    # ε tensor:  (n_samples, B, dv)
+    key, subkey = jax.random.split(key)
+    eps = jax.random.rademacher(subkey,
+                                (n_samples,) + v_batch.shape,
+                                dtype=v_batch.dtype)
+
+    def loss_one(x, v, eps_v):
         score = s(x, v)
-        squared_norm = jnp.sum(jnp.square(score))
-        
-        # Compute divergence based on mode
-        if div_mode in ['approximate_gaussian', 'approximate_rademacher', 'denoised']:
-            assert key is not None, "For stochastic divergence estimation, key must be provided"
-            div = div_fn(x, v, key) if key is not None else div_fn(x, v)
-        else:
-            div = div_fn(x, v)
-            
-        return squared_norm + 2 * div
-    
-    if div_mode in ['forward', 'reverse']:
-        # For exact methods, we can directly vmap over the batch
-        return jnp.mean(jax.vmap(compute_loss)(x_batch, v_batch))
-    else:
-        # For stochastic methods, we need to handle the random keys
-        batch_size = x_batch.shape[0]
-        keys = jax.random.split(key, batch_size)
-        loss_fn = lambda x, v, k: compute_loss(x, v, k)
-        return jnp.mean(jax.vmap(loss_fn)(x_batch, v_batch, keys))
+        # vmap over ε samples for this (x,v)
+        def one_eps(e):
+            _, jvp = jax.jvp(lambda vv: s(x, vv), (v,), (e,))
+            return jnp.vdot(jvp, e)
+        div = jax.vmap(one_eps)(eps_v).mean()
+        return jnp.sum(score * score) + 2.0 * div
+
+    # transpose so each particle gets its (n_samples,dv) slice
+    eps_per_particle = eps.transpose(1, 0, 2)          # (B, n_samples, dv)
+    batch_loss = jax.vmap(loss_one)(x_batch, v_batch, eps_per_particle)
+    return batch_loss.mean()

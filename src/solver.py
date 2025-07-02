@@ -1,7 +1,7 @@
 #%%
 import jax
 import jax.numpy as jnp
-from src.loss import explicit_score_matching_loss, implicit_score_matching_loss
+from src.loss import explicit_score_matching_loss, implicit_score_matching_loss, mse
 import optax
 from flax import nnx
 from functools import partial
@@ -30,7 +30,7 @@ def train_initial_model(model, x, v, initial_density, training_config, verbose=F
     
     optimizer  = nnx.Optimizer(model, optax.adamw(lr))
     score_vals = initial_density.score(x, v)
-    loss_fn    = lambda model, batch: explicit_score_matching_loss(model, *batch)
+    loss_fn    = lambda model, batch: mse(model(batch[0], batch[1]), batch[2])
     
     for epoch in range(num_epochs):
         loss = loss_fn(model, (x, v, score_vals))
@@ -98,7 +98,7 @@ def A(z, C, gamma):
 @partial(jax.jit, static_argnames='num_cells')
 def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     """
-    Q_i = (L/N)² Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
+    Q_i = (L/N) Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) · A(v_i−v_j)(s_i−s_j)
           with the linear-hat kernel ψ of width η, periodic on [0,L].
 
     Complexity O(N η/L)  (exact for the hat kernel).
@@ -106,8 +106,8 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     x = x[:, 0]
     N, d      = v.shape
     M         = num_cells
-    # w_particle = box_length / N        # (= L/N)
-    w_particle = 1 / N        # (= L/N)
+    w_particle = box_length / N        # (= L/N)
+    # w_particle = 1 / N        # (= L/N)
 
     # ---- bin & sort particles by cell --------------------------------------
     idx    = jnp.floor(x / eta).astype(jnp.int32) % M
@@ -132,7 +132,7 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
                 ψ  = psi(xi - xj, eta, box_length)
                 dv = vi - vj
                 ds = si - sj
-                inner_acc += w_particle * ψ * jnp.dot(A(dv, C, gamma), ds)
+                inner_acc += ψ * jnp.dot(A(dv, C, gamma), ds)
                 return inner_acc
 
             acc = lax.fori_loop(start, end, loop_over_particles, acc)

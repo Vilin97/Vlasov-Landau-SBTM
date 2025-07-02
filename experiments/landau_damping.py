@@ -1,18 +1,18 @@
 #%%
+import os
+os.environ["JAX_TRACEBACK_FILTERING"] = "off"
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import os
 import numpy as np
 from tqdm import tqdm
 
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+import src.path
 from src.mesh import Mesh1D
 from src.density import CosineNormal
 from src.score_model import MLPScoreModel, kde_score_hat
-from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field, collision
+from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field, collision, train_score_model
 import src.loss as loss
 from src.path import ROOT, DATA, PLOTS, MODELS
 from scipy.signal import argrelextrema
@@ -106,7 +106,7 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 1       # Velocity dimension
+dv = 2       # Velocity dimension
 gamma = -dv
 C = 0.1
 qe = 1
@@ -131,8 +131,10 @@ model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
 
 # Define training configuration
 gd_steps = 10
+batch_size = 2**12
+num_batch_steps = gd_steps
 training_config = {
-    "batch_size": 1024,
+    "batch_size": 2**12,
     "num_epochs": 1000, # initial training
     "abs_tol": 1e-4,
     "learning_rate": 1e-4,
@@ -155,6 +157,7 @@ solver = Solver(
     training_config=training_config
 )
 x0, v0, E0 = solver.x, solver.v, solver.E
+x, v, E = x0, v0, E0
 
 box_length = mesh.box_lengths[0]
 rho = evaluate_charge_density(x0, cells, eta, box_length)
@@ -170,12 +173,8 @@ from jax import jit
 
 @jit
 def kde_score_hat_1d(v: jnp.ndarray, eta):
-    """
-    ∇_v log f(v) for a 1-D KDE with the hat kernel of width `eta`.
-    No x-dependence, O(N log N) time, O(N) memory, GPU-friendly.
-    """
-    v   = jnp.ravel(v)             # (N,)
-    eta = jnp.asarray(eta)         # JAX scalar is fine
+    v   = jnp.ravel(v)
+    eta = jnp.asarray(eta)
     N   = v.size
 
     order   = jnp.argsort(v)
@@ -186,34 +185,37 @@ def kde_score_hat_1d(v: jnp.ndarray, eta):
     L = jnp.searchsorted(v_sort, v_sort - eta, side="left")
     R = jnp.searchsorted(v_sort, v_sort + eta, side="right")
 
-    win_len  = R - L
     idx      = jnp.arange(N)
+    win_len  = R - L
     n_left   = idx - L
     n_right  = R - idx - 1
 
     sum_left  = pref[idx] - pref[L]
     sum_right = pref[R] - pref[idx + 1]
 
-    num = (n_right - n_left) / (eta**2)                        # Σ ψ′
+    num = (n_right - n_left) / (eta**2)
     abs_sum = (n_left * v_sort - sum_left) + (sum_right - n_right * v_sort)
-    den = win_len / eta - abs_sum / (eta**2)                   # Σ ψ
+    den = win_len / eta - abs_sum / (eta**2)
     score_sorted = num / (den + 1e-12)
 
     rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
     return score_sorted[rev]
 
-#%%
-scores = kde_score_hat_1d(v0, eta*30)
+@jit
+def kde_score_hat(v: jnp.ndarray, eta):
+    """
+    ∇_v log f(v) for an (N, d) array using a separable 1-D hat kernel.
+    Returns (N, d) scores.
+    """
+    v = jnp.asarray(v)               # (N,d)
+    eta = jnp.asarray(eta)           # scalar or (d,)
 
-# Sort v0 and corresponding scores for plotting
-sort_idx = np.argsort(v0[:10**5, 0])
-plt.plot(v0[:10**5][sort_idx], initial_density.score(x0, v0)[:10**5][sort_idx], label='Initial Density Score')
-kde_loss = jnp.sum((scores - initial_density.score(x0, v0).flatten())**2)/num_particles
-model_loss = jnp.sum((solver.score_model(x0, v0) - initial_density.score(x0, v0))**2)/num_particles
-plt.plot(v0[:10**5][sort_idx], scores[:10**5][sort_idx], label=f'KDE Score, Loss: {kde_loss:.4f}')
-plt.plot(v0[:10**5][sort_idx], solver.score_model(x0, v0)[:10**5][sort_idx], label=f'Score Model, Loss: {model_loss:.4f}')
-plt.legend()
+    vT = v.T                         # (d,N)
+    if eta.ndim == 0:
+        eta = jnp.broadcast_to(eta, (vT.shape[0],))
 
+    scoresT = jax.vmap(kde_score_hat_1d, in_axes=(0, 0))(vT, eta)  # (d,N)
+    return scoresT.T
 
 #%%
 # Train and save the initial model
@@ -222,12 +224,40 @@ path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hid
 if not os.path.exists(path):
     train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
     model.save(path)
+
+time.sleep(1)
 #%%
 solver.score_model.load(path)
+
+# Plot the true score and the score given by the model for a subset of particles
+num_plot = 100_000
+v_plot = v0[:num_plot]
+x_plot = x0[:num_plot]
+sort_idx = np.argsort(v_plot[:, 0])
+
+true_score = initial_density.score(x, v)
+model_score = solver.score_model(x, v)
+kde_score = kde_score_hat(v, eta.item()*30)
+
+plt.figure(figsize=(8, 2))
+plt.plot(v_plot[sort_idx, 0], true_score[sort_idx, 0], label=f'True Score', alpha=0.7)
+plt.plot(v_plot[sort_idx, 0], model_score[sort_idx, 0], label=f'Model Score, mse={loss.mse(model_score, true_score):.4f}', alpha=0.7)
+plt.plot(v_plot[sort_idx, 0], kde_score[sort_idx, 0], label=f'KDE Score, mse={loss.mse(kde_score, true_score):.4f}', alpha=0.7)
+plt.xlabel('Velocity $v_1$')
+plt.ylabel('Score')
+plt.title('True Score vs Model Score vs KDE Score')
+plt.legend()
+plt.show()
+
+#%%
+print(jnp.linalg.norm(collision(x, v, true_score, eta, C, gamma, box_length, num_cells)))
+print(jnp.linalg.norm(collision(x, v, model_score, eta, C, gamma, box_length, num_cells)))
+print(jnp.linalg.norm(collision(x, v, kde_score, eta, C, gamma, box_length, num_cells)))
 
 #%%
 "Solve"
 # Simulation parameters
+key = jax.random.PRNGKey(seed)
 final_time = 15.0
 dt = 0.05
 num_steps = int(final_time / dt)
@@ -238,16 +268,17 @@ example_path = f"{example_name}_dx{dx}_dv{dv}_C{C}_alpha{alpha}_k{k}_T{final_tim
 times = np.linspace(0, final_time, num_steps+1)
 e_l2_norms = np.zeros(num_steps+1)
 implicit_losses = np.zeros(num_steps+1)
+train_losses = []
 
 # Calculate initial metrics
 e_l2_norms[0] = jnp.sqrt((jnp.sum(solver.E**2) * solver.eta))[0]
-# implicit_losses[0] = loss.implicit_score_matching_loss(solver.score_model, solver.x, solver.v, key=jax.random.PRNGKey(seed))
+implicit_losses[0] = loss.implicit_score_matching_loss(solver.score_model, x[:2**15], v[:2**15], key=jax.random.PRNGKey(seed))
 
-# Run simulation for multiple steps and collect metrics
-print("Running simulation...")
-x, v, E = solver.x, solver.v, solver.E
+collision_strengths = np.zeros(num_steps+1)
+collision_strengths[0] = jnp.linalg.norm(collision(solver.x, solver.v, kde_score_hat(v, eta.item()*30), solver.eta, C, gamma, box_length, num_cells))
+drift_strengths = np.zeros(num_steps+1)
+drift_strengths[0] = jnp.linalg.norm(evaluate_field_at_particles(x, cells, solver.E, eta, box_length))
 
-key = jax.random.PRNGKey(seed)
 for step in tqdm(range(num_steps), desc="Solving"):
     # Perform a single time step
     key, subkey = jax.random.split(key)
@@ -256,7 +287,9 @@ for step in tqdm(range(num_steps), desc="Solving"):
     E_at_particles = evaluate_field_at_particles(x, cells, E, eta, box_length)
     
     v_new = v.at[:, 0].add(dt * E_at_particles)
-    s = kde_score_hat_1d(v, eta*30)[:,None] # use KDE
+    losses = train_score_model(solver.score_model, solver.optimizer, solver.loss_fn, x, v, key, batch_size, num_batch_steps)
+    s = solver.score_model(x, v)
+    # s = kde_score_hat(v, eta.item()*30) # use KDE
     collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
     v_new = v_new - dt * collision_term
 
@@ -269,7 +302,10 @@ for step in tqdm(range(num_steps), desc="Solving"):
     
     # Calculate metrics
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
-    # implicit_losses[step+1] = loss.implicit_score_matching_loss(solver.score_model, x, v, key=jax.random.PRNGKey(seed))
+    collision_strengths[step+1] = jnp.linalg.norm(collision_term)
+    drift_strengths[step+1] = jnp.linalg.norm(E_at_particles)
+    implicit_losses[step+1] = loss.implicit_score_matching_loss(solver.score_model, x[:2**15], v[:2**15], key=jax.random.PRNGKey(seed))
+    train_losses.append(losses)
     
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
@@ -348,6 +384,20 @@ def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLO
 
 #%%
 plot_electric_field_norm(times, e_l2_norms, example_path, solver, PLOTS)
+#%%
+plt.plot(times, collision_strengths, label='Collision Strength')
+plt.plot(times, drift_strengths, label='Drift Strength')
+plt.xlabel('Time')
+plt.ylabel('Strength')
+plt.legend()
+plt.show()
+
+plt.plot(times, implicit_losses, label='Implicit Loss, batch size 2^15')
+
+# Plot training losses with refined time grid
+train_losses_flat = [loss for losses in train_losses for loss in losses]
+refined_times = np.linspace(0, final_time, len(train_losses_flat))
+plt.plot(refined_times, train_losses_flat, label=f'Training Loss, batch size {batch_size}', alpha=0.7)
 #%%
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms, save=False)
