@@ -118,18 +118,15 @@ def weighted_explicit_score_matching_loss(s, x_batch, v_batch, target_score_valu
     
     return jnp.mean(jax.vmap(weighted_loss)(x_batch, v_batch, target_score_values, weighting))
 
-@nnx.jit(static_argnames=['div_mode'])
-def implicit_score_matching_loss(s, x_batch, v_batch, key, div_mode='approximate_rademacher', n_samples: int = 4):
+@nnx.jit(static_argnames='div_mode')
+def implicit_score_matching_loss(s, x_batch, v_batch, key, div_mode='approximate_rademacher', n_samples: int = 1):
     """
     1/|B| ∑ (‖s(x,v)‖² + 2 div_v s(x,v))     with Hutchinson divergence.
     One PRNG key → one ε-tensor shared across the batch (still unbiased).
     """
     assert div_mode == 'approximate_rademacher', "Only 'approximate_rademacher' divergence mode is currently implemented"
     # ε tensor:  (n_samples, B, dv)
-    key, subkey = jax.random.split(key)
-    eps = jax.random.rademacher(subkey,
-                                (n_samples,) + v_batch.shape,
-                                dtype=v_batch.dtype)
+    eps = jax.random.rademacher(key, (n_samples,) + v_batch.shape, dtype=v_batch.dtype)
 
     def loss_one(x, v, eps_v):
         score = s(x, v)
