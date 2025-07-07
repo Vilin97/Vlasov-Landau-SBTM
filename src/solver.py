@@ -88,12 +88,11 @@ def opt_step(model, optimizer, loss, batch, key=None):
     optimizer.update(grads)
     return loss_value
 
-@jax.jit
-def A(z, C, gamma):
-    """A(z) = C |z|^gamma (|z|² I_d − z⊗z)."""
-    z_norm  = jnp.linalg.norm(z) + 1e-10
-    factor  = C * z_norm ** gamma
-    return factor * (jnp.eye(z.shape[0]) * z_norm**2 - jnp.outer(z, z))
+def A_apply(dv, ds, C, gamma, eps=1e-10):
+    r2   = jnp.dot(dv, dv) + eps          # ‖dv‖²
+    r_g  = r2 ** (gamma / 2)              # ‖dv‖^γ
+    dvds = jnp.dot(dv, ds)                # dv·ds
+    return C * r_g * (r2 * ds - dvds * dv)
 
 @partial(jax.jit, static_argnames='num_cells')
 def collision(x, v, s, eta, C, gamma, box_length, num_cells):
@@ -132,7 +131,7 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
                 ψ  = psi(xi - xj, eta, box_length)
                 dv = vi - vj
                 ds = si - sj
-                inner_acc += ψ * jnp.dot(A(dv, C, gamma), ds)
+                inner_acc += ψ * A_apply(dv, ds, C, gamma)
                 return inner_acc
 
             acc = lax.fori_loop(start, end, loop_over_particles, acc)
@@ -142,14 +141,14 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
         for c in ((cell - 1) % M, cell, (cell + 1) % M):
             Q_i = loop_over_cell(c, Q_i)
 
-        return Q_i                            # no division by N here
+        return Q_i
 
     Q_sorted = jax.vmap(Q_single)(jnp.arange(N))
 
     # ---- unsort back to original particle order ----------------------------
     rev = jnp.empty_like(order)
     rev = rev.at[order].set(jnp.arange(N))
-    return w_particle * Q_sorted[rev]         # second factor of (L/N)
+    return w_particle * Q_sorted[rev]
 
 
 @jax.jit
