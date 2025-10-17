@@ -184,8 +184,8 @@ def step(x, v, E, cells, eta, dt, box_length):
 
     return x_new, v_new, E_new, rho
 
-final_time = 10.0
-dt = 0.02
+final_time = 30.0
+dt = 0.01
 num_steps = int(final_time / dt)
 t = 0.
 E_L2 = [jnp.sqrt(jnp.sum(E**2) * eta)]
@@ -255,3 +255,5 @@ cbar2 = plt.colorbar(kde2.get_children()[0], ax=axs[1], label='Density')
 plt.tight_layout()
 plt.show()
 
+
+# %%

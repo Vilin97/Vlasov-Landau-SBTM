@@ -108,7 +108,7 @@ k = 0.5      # Wave number
 dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 gamma = -dv
-C = 0.1
+C = 0.0      # Collision strength 
 qe = 1
 numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
 
@@ -131,12 +131,12 @@ model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
 
 # Define training configuration
 gd_steps = 40
-batch_size = 2**12
+batch_size = 2**10
 num_batch_steps = gd_steps
 training_config = {
-    "batch_size": 2**12,
+    "batch_size": batch_size,
     "num_epochs": 1000, # initial training
-    "abs_tol": 1e-4,
+    "abs_tol": 1e-3,
     "learning_rate": 1e-4,
     "num_batch_steps": gd_steps  # at each step
 }
@@ -170,15 +170,17 @@ plt.show()
 
 #%%
 # Train and save the initial model
-epochs = solver.training_config["num_epochs"]
-path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-if not os.path.exists(path):
-    train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
-    model.save(path)
+if C > 0.0:
+    epochs = solver.training_config["num_epochs"]
+    path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+    if not os.path.exists(path):
+        train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
+        model.save(path)
 
 time.sleep(1)
 #%%
-solver.score_model.load(path)
+if C > 0.0:
+    solver.score_model.load(path)
 
 # Plot the true score and the score given by the model for a subset of particles
 num_plot = 100_000
@@ -216,7 +218,7 @@ train_losses = []
 
 # Calculate initial metrics
 e_l2_norms[0] = jnp.sqrt((jnp.sum(solver.E**2) * solver.eta))[0]
-implicit_losses[0] = loss.implicit_score_matching_loss(solver.score_model, x[:2**15], v[:2**15], key=jax.random.PRNGKey(seed))
+implicit_losses[0] = loss.implicit_score_matching_loss(solver.score_model, x[:batch_size], v[:batch_size], key=jax.random.PRNGKey(seed))
 
 collision_strengths = np.zeros(num_steps+1)
 collision_strengths[0] = jnp.linalg.norm(collision(solver.x, solver.v, solver.score_model(x, v), solver.eta, C, gamma, box_length, num_cells))
@@ -234,11 +236,15 @@ for step in tqdm(range(num_steps), desc="Solving"):
     t2 = time.time()
     v_new = v.at[:, 0].add(dt * E_at_particles)
     t3 = time.time()
-    losses = train_score_model(solver.score_model, solver.optimizer, solver.loss_fn, x, v, key, batch_size, num_batch_steps)
+    if C > 0.0:
+        losses = train_score_model(solver.score_model, solver.optimizer, solver.loss_fn, x, v, key, batch_size, num_batch_steps)
     t4 = time.time()
     s = solver.score_model(x, v)
     t5 = time.time()
-    collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
+    if C > 0.0:
+        collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
+    else:
+        collision_term = 0
     v_new = v_new - dt * collision_term
 
     t6 = time.time()
@@ -254,20 +260,20 @@ for step in tqdm(range(num_steps), desc="Solving"):
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
     collision_strengths[step+1] = jnp.linalg.norm(collision_term)
     drift_strengths[step+1] = jnp.linalg.norm(E_at_particles)
-    implicit_losses[step+1] = loss.implicit_score_matching_loss(solver.score_model, x[:2**15], v[:2**15], key=jax.random.PRNGKey(seed))
+    implicit_losses[step+1] = loss.implicit_score_matching_loss(solver.score_model, x[:batch_size], v[:batch_size], key=jax.random.PRNGKey(seed))
     train_losses.append(losses)
     t8 = time.time()
 
     # Print timing information
-    # if step % 10 == 0:
-    #     print(f"Step {step+1}/{num_steps}:")
-    #     print(f"  E at particles: {t2 - t1:.6f}s")
-    #     print(f"  Update velocities: {t3 - t2:.6f}s")
-    #     print(f"  Train score model: {t4 - t3:.6f}s")
-    #     print(f"  Score evaluation: {t5 - t4:.6f}s")
-    #     print(f"  Collision term: {t6 - t5:.6f}s")
-    #     print(f"  Update positions and field: {t7 - t6:.6f}s")
-    #     print(f"  Calculate metrics: {t8 - t7:.6f}s")
+    if step % 10 == 0:
+        print(f"Step {step+1}/{num_steps}:")
+        print(f"  E at particles: {t2 - t1:.6f}s")
+        print(f"  Update velocities: {t3 - t2:.6f}s")
+        print(f"  Train score model: {t4 - t3:.6f}s")
+        print(f"  Score evaluation: {t5 - t4:.6f}s")
+        print(f"  Collision term: {t6 - t5:.6f}s")
+        print(f"  Update positions and field: {t7 - t6:.6f}s")
+        print(f"  Calculate metrics: {t8 - t7:.6f}s")
     
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
