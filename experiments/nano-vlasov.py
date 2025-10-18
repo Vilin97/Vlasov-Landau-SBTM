@@ -7,6 +7,9 @@ import jax.random as jr
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import seaborn as sns
+import numpy as np
+
+jax.config.update("jax_enable_x64", True)
 
 def rejection_sample(key, density_fn, domain, max_value, num_samples=1):
     "sample in parallel"
@@ -123,14 +126,14 @@ seed = 42
 alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 dx = 1       # Position dimension
-dv = 3       # Velocity dimension
+dv = 2       # Velocity dimension
 
 # set number of particles
-num_particles = 1_000_000
+num_particles = 100_000_000 # 1e8 uses 18 Gb RAM
 
 # Create a mesh
 box_length = 2 * jnp.pi / k
-num_cells = 128
+num_cells = 10**4
 eta = box_length / num_cells
 cells = (jnp.arange(num_cells) + 0.5) * eta
 
@@ -150,7 +153,7 @@ rho = evaluate_charge_density(x, cells, eta, box_length)
 E = jnp.cumsum(rho - jnp.mean(rho)) * eta
 
 # Visualize
-visualize_initial(x, v[:,0], cells, E, rho, eta, box_length)
+# visualize_initial(x, v[:,0], cells, E, rho, eta, box_length)
 
 x0, v0, E0, rho0 = x, v, E, rho
 
@@ -184,8 +187,8 @@ def step(x, v, E, cells, eta, dt, box_length):
 
     return x_new, v_new, E_new, rho
 
-final_time = 30.0
-dt = 0.01
+final_time = 50.0
+dt = 0.002
 num_steps = int(final_time / dt)
 t = 0.
 E_L2 = [jnp.sqrt(jnp.sum(E**2) * eta)]
@@ -202,7 +205,7 @@ for step_num in tqdm(range(num_steps)):
 "Plot L2 norm of E over time"
 
 plt.figure(figsize=(6,4))
-plt.plot(jnp.linspace(0, final_time, num_steps+1), E_L2, marker='o', markersize=3, label='Simulation')
+plt.plot(jnp.linspace(0, final_time, num_steps+1), E_L2, marker='o', markersize=1, label='Simulation')
 
 # Predicted curve
 t_grid = jnp.linspace(0, final_time, num_steps+1)
@@ -212,9 +215,24 @@ predicted *= E_L2[0]/predicted[0]
 gamma = prefactor
 plt.plot(t_grid, predicted, 'r--', label=fr'$e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
 
+t_grid = np.asarray(t_grid)
+E_L2 = np.asarray(E_L2)
+mask = (t_grid > 0.2) & (t_grid < 20)
+t_mask = t_grid[mask]
+n_mask = E_L2[mask]
+
+cond = (n_mask[1:-1] > n_mask[:-2]) & (n_mask[1:-1] > n_mask[2:])
+maxima_indices = np.where(cond)[0] + 1
+mt = t_mask[maxima_indices]
+mv = n_mask[maxima_indices]
+plt.scatter(mt, mv, color='g', marker='o', zorder=5)
+coeffs = np.polyfit(mt, np.log(mv), 1)
+fit = np.exp(coeffs[1] + coeffs[0] * t_mask)
+plt.plot(t_mask, fit, 'g--', label=fr'$e^{{\beta t}}, \beta={coeffs[0]:.3f}$')
+
 plt.xlabel('Time')
 plt.ylabel(r'$||E||_{L^2}$')
-plt.title(r'L2 norm of $E$ vs Time')
+plt.title(f"n={num_particles:.0e}, Δt={dt}, dv={dv}, α={alpha}, C=0, N={num_cells}")
 plt.yscale('log')
 plt.grid(True)
 plt.legend()

@@ -20,6 +20,7 @@ import time
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+jax.config.update("jax_enable_x64", True)
 
 example_name = "landau_damping"
 
@@ -130,7 +131,7 @@ model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
 
 
 # Define training configuration
-gd_steps = 40
+gd_steps = 5
 batch_size = 2**10
 num_batch_steps = gd_steps
 training_config = {
@@ -170,17 +171,15 @@ plt.show()
 
 #%%
 # Train and save the initial model
-if C > 0.0:
-    epochs = solver.training_config["num_epochs"]
-    path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-    if not os.path.exists(path):
-        train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
-        model.save(path)
+epochs = solver.training_config["num_epochs"]
+path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
+if not os.path.exists(path):
+    train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
+    model.save(path)
 
 time.sleep(1)
 #%%
-if C > 0.0:
-    solver.score_model.load(path)
+solver.score_model.load(path)
 
 # Plot the true score and the score given by the model for a subset of particles
 num_plot = 100_000
@@ -236,15 +235,20 @@ for step in tqdm(range(num_steps), desc="Solving"):
     t2 = time.time()
     v_new = v.at[:, 0].add(dt * E_at_particles)
     t3 = time.time()
-    if C > 0.0:
+    if C > 0:
         losses = train_score_model(solver.score_model, solver.optimizer, solver.loss_fn, x, v, key, batch_size, num_batch_steps)
+    else:
+        losses = []
     t4 = time.time()
-    s = solver.score_model(x, v)
+    if C > 0:
+        s = solver.score_model(x, v)
+    else:
+        s = 0
     t5 = time.time()
-    if C > 0.0:
+    if C > 0:
         collision_term = collision(x, v, s, eta, C, gamma, box_length, num_cells)
     else:
-        collision_term = 0
+        collision_term = 0.0
     v_new = v_new - dt * collision_term
 
     t6 = time.time()
@@ -260,12 +264,13 @@ for step in tqdm(range(num_steps), desc="Solving"):
     e_l2_norms[step+1] = jnp.sqrt((jnp.sum(E**2) * solver.eta))[0]
     collision_strengths[step+1] = jnp.linalg.norm(collision_term)
     drift_strengths[step+1] = jnp.linalg.norm(E_at_particles)
+    t8 = time.time()
     implicit_losses[step+1] = loss.implicit_score_matching_loss(solver.score_model, x[:batch_size], v[:batch_size], key=jax.random.PRNGKey(seed))
     train_losses.append(losses)
-    t8 = time.time()
+    t9 = time.time()
 
     # Print timing information
-    if step % 10 == 0:
+    if step % 200 == 0:
         print(f"Step {step+1}/{num_steps}:")
         print(f"  E at particles: {t2 - t1:.6f}s")
         print(f"  Update velocities: {t3 - t2:.6f}s")
@@ -274,6 +279,9 @@ for step in tqdm(range(num_steps), desc="Solving"):
         print(f"  Collision term: {t6 - t5:.6f}s")
         print(f"  Update positions and field: {t7 - t6:.6f}s")
         print(f"  Calculate metrics: {t8 - t7:.6f}s")
+        print(f"  Calculate implicit loss: {t9 - t8:.6f}s")
+        print(f"  Total time for step: {t9 - t1:.6f}s")
+        print(f"Bottleneck: {max([(t2 - t1, 'E at particles'), (t3 - t2, 'Update velocities'), (t4 - t3, 'Train score model'), (t5 - t4, 'Score evaluation'), (t6 - t5, 'Collision term'), (t7 - t6, 'Update positions and field'), (t8 - t7, 'Calculate metrics'), (t9 - t8, 'Calculate implicit loss')], key=lambda x: x[0])}")
     
 # Save final state
 solver.x, solver.v, solver.E = x, v, E
@@ -301,7 +309,8 @@ def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLO
     predicted_collisional = jnp.exp(t_grid * prefactor_collisional)
     predicted_collisional *= loaded_e_l2_norms[0] / predicted_collisional[0]
     gamma = prefactor_collisional
-    plt.plot(t_grid, predicted_collisional, 'r--', label=fr'$collisional: e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
+    if C > 0:
+        plt.plot(t_grid, predicted_collisional, 'r--', label=fr'$collisional: e^{{\gamma t}},\ \gamma = {gamma:.3f}$')
 
     # Predicted collisionless curve (C=0)
     prefactor_collisionless = prefactor  # C=0
@@ -322,7 +331,7 @@ def plot_electric_field_norm(times, loaded_e_l2_norms, example_path, solver, PLO
     plt.ylim(ymin * 0.95, ymax * 1.05)
 
     # Find all local maxima for t < ... and plot a straight line through them
-    mask = times < 10
+    mask = times < 20
     norms_masked = loaded_e_l2_norms[mask]
     times_masked = times[mask]
 
@@ -365,7 +374,7 @@ plt.show()
 train_losses_flat = [loss for losses in train_losses for loss in losses]
 refined_times = np.linspace(0, final_time, len(train_losses_flat))
 plt.plot(refined_times, train_losses_flat, label=f'Training Loss, batch size {batch_size}', alpha=0.7)
-plt.plot(times, implicit_losses, label='Implicit Loss, batch size 2^15')
+plt.plot(times, implicit_losses, label=f'Implicit Loss, batch size {batch_size}', alpha=1)
 plt.xlabel('Time')
 plt.ylabel('Loss')
 plt.title('Implicit Loss and Training Loss Over Time')
@@ -374,3 +383,5 @@ plt.show()
 #%%
 # Visualize results
 visualize_results(solver, mesh, times, e_l2_norms, save=False)
+
+# %%
