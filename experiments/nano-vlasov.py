@@ -12,12 +12,12 @@ from scipy.signal import argrelextrema
 
 jax.config.update("jax_enable_x64", True)
 
-def visualize_initial(x, v, cells, E, rho, eta, L):
+def visualize_initial(x, v, cells, E, rho, eta, L, v_target=lambda v: jax.scipy.stats.norm.pdf(v, 0, 1)):
     """Visualize initial data."""
     fig, axs = plt.subplots(1, 3, figsize=(15, 4))
 
     # 1. Histogram of x and desired density
-    axs[0].hist(x, bins=50, density=True, alpha=0.6, label='Sampled $x$')
+    axs[0].hist(x, bins=50, density=True, alpha=0.4, label='Sampled $x$')
     x_grid = jnp.linspace(0, L, 200)
     axs[0].plot(x_grid, spatial_density(x_grid), 'r-', label='Target density')
     axs[0].plot(cells, rho / L, 'g-', label='$\\rho/L$')
@@ -26,9 +26,9 @@ def visualize_initial(x, v, cells, E, rho, eta, L):
     axs[0].legend()
 
     # 2. Histogram of v and standard normal
-    axs[1].hist(v, bins=50, density=True, alpha=0.6, label='Sampled $v$')
+    axs[1].hist(v, bins=50, density=True, alpha=0.4, label='Sampled $v$')
     v_grid = jnp.linspace(v.min()-1, v.max()+1, 200)
-    axs[1].plot(v_grid, jax.scipy.stats.norm.pdf(v_grid, 0, 1), 'r-', label='Target $N(0,1)$')
+    axs[1].plot(v_grid, v_target(v_grid), 'r-', label='Target $N(0,1)$')
     axs[1].set_title('Velocity $v$')
     axs[1].set_xlabel('$v$')
     axs[1].legend()
@@ -127,6 +127,7 @@ def step(x, v, E, cells, eta, dt, box_length):
     return x_new, v_new, E_new
 
 # %%
+"Landau damping"
 seed = 42
 
 # set physical constants
@@ -138,9 +139,12 @@ alpha = 0.1  # Perturbation strength
 k = 0.5      # Wave number
 L = 2 * jnp.pi / k # domain size
 
-for n in [10**6, 10**7, 10**8]:
-    for M in [1000, 100, 10]:
-        for dt in [0.1, 0.01, 0.001]:
+# for n in [10**6, 10**7, 10**8]:
+for n in [10**8]:
+    # for M in [1000, 100, 10]:
+    for M in [50, 20]:
+        # for dt in [0.1, 0.01, 0.001]:
+        for dt in [0.01, 0.001]:
             print(f"Running n={n:.0e}, M={M}, dt={dt}")
 
             # set numerical constants
@@ -214,3 +218,132 @@ for n in [10**6, 10**7, 10**8]:
 
             plt.savefig(f"data/plots/electric_field_norm/collisionless_1d_1v/landau_damping_n{n:.0e}_M{M}_dt{dt}.png")
             plt.show()
+
+#%%
+"Two-stream instability"
+seed = 42
+
+# Set constants
+dx = 1       # Position dimension
+dv = 1       # Velocity dimension
+q = 1
+alpha, k, c = 1/200, 1/5, 2.4
+L = 2 * jnp.pi / k
+n = 10**7
+M = 100
+dt = 0.05
+
+eta = L / M
+cells = (jnp.arange(M) + 0.5) * eta
+w = q*L/n    # particle weight / charge
+
+# sample initial velocity
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v1 = jr.multivariate_normal(key_v, np.zeros(dv), jnp.eye(dv), shape=(n//2,)).reshape((n//2, dv))
+v1 = v1 - jnp.mean(v1, axis=0) + c  # zero-mean velocity
+v2 = -v1
+v = jnp.vstack([v1, v2])
+
+# Sample initial positions with rejection sampling
+def spatial_density(x):
+    return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
+max_value = jnp.max(spatial_density(cells))
+domain = (0, L)
+x = rejection_sample(key_x, spatial_density, domain, max_value = max_value, num_samples=n)
+
+# Compute initial electric field
+rho = evaluate_charge_density(x, cells, eta, w)
+E = jnp.cumsum(rho - 1) * eta 
+E = E - jnp.mean(E)
+visualize_initial(x, v[:,0], cells, E, rho, eta, L, v_target=lambda v: 0.5 * (jax.scipy.stats.norm.pdf(v, -c, 1) + jax.scipy.stats.norm.pdf(v, c, 1)))
+
+final_time = 50.0 + 2*dt
+num_steps = int(final_time / dt)
+t = 0.
+E_L2 = [jnp.sqrt(jnp.sum(E**2) * eta)]
+x_traj = []
+v_traj = []
+t_traj = []
+for step_num in tqdm(range(num_steps)):
+    if step_num % (num_steps // 5) == 0:
+        x_traj.append(x.copy())
+        v_traj.append(v.copy())
+        t_traj.append(t)
+    x, v, E = step(x, v, E, cells, eta, dt, L)
+    E = E - jnp.mean(E)  # enforce zero-mean
+    t += dt
+    E_L2.append(jnp.sqrt(jnp.sum(E**2) * eta))
+
+#%%
+# phase-space snapshots from x_traj, v_traj
+times = np.linspace(0.0, final_time, len(x_traj))
+num = len(x_traj)
+cols = min(3, num)
+rows = int(np.ceil(num / cols))
+
+fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows), sharex=True, sharey=True)
+axs = np.array(axs).reshape(-1)
+
+# global v-limits for consistent plots
+v_all = np.concatenate([np.asarray(v[:, 0]) for v in v_traj])
+vmin, vmax = float(v_all.min()), float(v_all.max())
+
+last_img = None
+for i, (x_snap, v_snap, t_snap) in enumerate(zip(x_traj, v_traj, t_traj)):
+    ax = axs[i]
+    xs = np.asarray(x_snap) % float(L)
+    vs = np.asarray(v_snap)[:, 0]
+
+    H, xedges, yedges, img = ax.hist2d(xs, vs, bins=[400, 400],
+               range=[[0.0, float(L)], [vmin, vmax]],
+               cmap='jet', density=True)
+    last_img = img
+    # ax.scatter(xs, vs, s=1, alpha=0.4)
+    ax.set_title(f"t = {t_snap:.1f}")
+    ax.set_xlim(0.0, float(L))
+    ax.set_ylim(vmin, vmax)
+    ax.set_xlabel("x")
+    ax.set_ylabel("v")
+
+# hide unused axes
+for j in range(i + 1, len(axs)):
+    axs[j].axis("off")
+
+# add a single colorbar for all subplots
+if last_img is not None:
+    cbar = fig.colorbar(last_img, ax=axs.tolist(), orientation='vertical', fraction=0.02, pad=0.02)
+    cbar.set_label('Density')
+
+# plt.tight_layout()
+plt.show()
+
+#%%
+# plot L2 norm of E over time
+plt.figure(figsize=(6,4))
+plt.plot(jnp.linspace(0, final_time, num_steps+1), E_L2, marker='o', markersize=1, label='Simulation')
+
+# plot straight lines
+t_grid = jnp.linspace(0, final_time, num_steps+1)
+t_grid = np.asarray(t_grid)
+E_L2 = np.asarray(E_L2)
+mask = (t_grid > 10) & (t_grid < 25)
+t_mask = t_grid[mask]
+n_mask = E_L2[mask]
+
+# Predicted curve
+prefactor = 0.2258
+predicted = jnp.exp(t_mask * prefactor)
+predicted *= E_L2[0]/predicted[0]
+gamma = prefactor
+plt.plot(t_mask, predicted, 'r--', label=fr'$e^{{\gamma t}}, \gamma = {gamma:.3f}$')
+
+plt.xlabel('Time')
+plt.ylabel(r'$||E||_{L^2}$')
+plt.title(f"n={n:.0e}, Δt={dt}, dv={dv}, α={alpha}, C=0, M={M}")
+plt.yscale('log')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+
+# plt.savefig(f"data/plots/electric_field_norm/collisionless_1d_1v/landau_damping_n{n:.0e}_M{M}_dt{dt}.png")
+plt.show()
