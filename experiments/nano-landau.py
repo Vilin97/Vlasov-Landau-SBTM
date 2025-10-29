@@ -130,9 +130,8 @@ def loss_explicit(model, v, s_true):
     s_pred = model(v)                      # (n,d)
     return jnp.sum((s_pred - s_true) ** 2) / v.shape[0]
 
-def loss_implicit(model, v, key, alpha=0.05):
+def loss_implicit(model, v, z, alpha=0.05):
     "denoising trick for score matching loss, eq. (3.5) in Ilin, Wang, Hu 2025"
-    z = jr.normal(key, v.shape)          # (n,d)
     s_pred = model(v)                      # (n,d)
     s_lo   = model(v - alpha * z)           # (n,d)
     s_hi   = model(v + alpha * z)           # (n,d)
@@ -144,8 +143,9 @@ v = sample_anisotropic(jr.PRNGKey(0), n=10000, d=3)
 sigma = jnp.array([1.8, 0.2, 1.0])
 s_true = score_gaussian(v, sigma)
 print("Loss explicit:", loss_explicit(score_kde, v, s_true))
-print("Loss implicit:", loss_implicit(score_kde, v, jr.PRNGKey(1)))
-print("difference:", loss_explicit(score_kde, v, s_true) - loss_implicit(score_kde, v, jr.PRNGKey(1)))
+z = jr.normal(jr.PRNGKey(1), v.shape)
+print("Loss implicit:", loss_implicit(score_kde, v, z))
+print("difference:", loss_explicit(score_kde, v, s_true) - loss_implicit(score_kde, v, z))
 print("Expected diff:", jnp.sum(score_gaussian(v, sigma) ** 2) / v.shape[0])
 
 #%%
@@ -186,7 +186,7 @@ import optax
 
 # train initial model
 batch_size = 1024
-num_epochs = 100
+num_epochs = 1000
 abs_tol    = 1e-3
 lr         = 1e-3
 
@@ -207,6 +207,30 @@ for epoch in range(num_epochs):
         v_batch = v_shuffled[i:i + batch_size]
         s_batch = s_shuffled[i:i + batch_size]
         loss_value, grads = nnx.value_and_grad(loss_fn)(model, v_batch, s_batch)
+        optimizer.update(grads)
+
+# %%
+model = MLPScoreModel(d)
+model(v)
+
+optimizer  = nnx.Optimizer(model, optax.adamw(lr))
+loss_fn    = lambda model, v_batch, z_batch: loss_implicit(model, v_batch, z_batch)
+key = jr.PRNGKey(42)
+for epoch in range(100):
+    s = score_gaussian(v, sigma)
+    explicit_loss_val = loss_explicit(model, v, s)
+    z = jr.normal(key, v.shape)
+    loss_implicit_val = loss_implicit(model, v, z)
+    print(f"Epoch {epoch}: explicit loss = {explicit_loss_val:.5f}, implicit loss = {loss_implicit_val:.5f}")
+
+    perm = jax.random.permutation(jax.random.PRNGKey(epoch), len(v))
+    v_shuffled, s_shuffled = v[perm], score_vals[perm]
+    batch_key = key
+    for i in range(0, len(v), batch_size):
+        batch_key = jr.fold_in(batch_key, epoch)
+        v_batch = v_shuffled[i:i + batch_size]
+        z_batch = jr.normal(batch_key, v_batch.shape)
+        loss_value, grads = nnx.value_and_grad(loss_fn)(model, v_batch, z_batch)
         optimizer.update(grads)
 
 #%%
@@ -289,7 +313,7 @@ for d in d_values:
         results[(n,d)] = run_landau(key, d=d, n=n, dt=1, t_end=300, log_every=5, gamma=-3)
 
 
-# %%
+#%%
 fig, axs = plt.subplots(len(d_values), 3, figsize=(13, 6), sharex='col')
 
 for row, d in enumerate(d_values):

@@ -106,7 +106,6 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     N, d      = v.shape
     M         = num_cells
     w_particle = box_length / N        # (= L/N)
-    # w_particle = 1 / N        # (= L/N)
 
     # ---- bin & sort particles by cell --------------------------------------
     idx    = jnp.floor(x / eta).astype(jnp.int32) % M
