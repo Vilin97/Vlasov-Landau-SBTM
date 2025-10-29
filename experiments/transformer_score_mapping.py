@@ -559,3 +559,12 @@ tbl.scale(1.1, 1.2)
 plt.title("Timing summary (ms)")
 plt.tight_layout()
 plt.show()
+
+#%%
+X = torch.randn(1, 2**18, 2, device=device) # 260,000 points
+t = time.perf_counter()
+model.eval()
+model(X) # takes about 10 Gb of GPU memory
+torch.cuda.synchronize()
+t2 = time.perf_counter()
+print(f"Transformer inference on 2^18 points took {(t2 - t)*1000:.2f} ms") # about 100 seconds
