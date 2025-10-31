@@ -12,7 +12,6 @@ import optax
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-jax.config.update("jax_enable_x64", False)
 
 #%%
 # -------------------------
@@ -23,7 +22,7 @@ key_master    = random.PRNGKey(SEED)
 
 SEQ_LEN       = 1000          # n
 BATCH         = 4            # sequences per step
-STEPS         = 6_000
+STEPS         = 50
 LR            = 2e-4
 PRINT_EVERY   = 200
 WEIGHT_DECAY  = 1e-6
@@ -351,7 +350,7 @@ visualize_scores(model, random.PRNGKey(3), n=1000, m=20, K=2, d=DIM)
 visualize_scores(model, random.PRNGKey(4), n=1000, m=20, K=2, d=DIM)
 
 #%%
-"Save the chekckpoint"
+"Save the checkpoint"
 
 # checkpoints.py
 import os, time, json
@@ -424,3 +423,5 @@ ckpt_dir = save_transformer(model, d=DIM, tag=f"runA_step{STEPS}", force=True)
 # construct = lambda d_in, d_model, nhead, num_layers, ff_dim, seed, dtype, **_: \
 #     ScoreTransformer(d_in, d_model, nhead, num_layers, ff_dim, seed=seed, dtype=getattr(jnp, dtype.split('.')[-1]))
 # model = load_transformer(ckpt_dir, construct_fn=construct)
+
+# %%
