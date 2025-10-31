@@ -26,10 +26,10 @@ BATCH = 32               # sequences per step (keep small to fit memory)
 STEPS = 2_000          # training steps
 LR = 2e-4
 PRINT_EVERY = 200
-D_MODEL = 128
+D_MODEL = 56
 NHEAD = 8
-LAYERS = 4
-FF_DIM = 256
+LAYERS = 2
+FF_DIM = 112
 WEIGHT_DECAY = 1e-6
 
 MEAN_RANGE = 4.0        # means sampled from [-MEAN_RANGE, MEAN_RANGE]^2
@@ -211,7 +211,7 @@ with torch.no_grad():
     print(f"Eval MSE on a fresh K=2 mixture: {mse:.6f}")
 
 #%%
-# --- add to transformer_gmm_score.py ---
+# plot
 import matplotlib.pyplot as plt
 
 @torch.no_grad()
@@ -389,6 +389,8 @@ def train_mlp_on_fixed_cloud(X, steps=5000, lr=1e-3, alpha=0.05, wd=0.0, verbose
             print(f"[MLP] step {t:5d}  loss {loss.item():.6f}  ema {ema:.6f}")
     return mlp
 
+gmm_fixed, X_fixed, S_fixed = sample_batch_from_gmm(n=1000, K=2)
+mlp = train_mlp_on_fixed_cloud(X_fixed, steps=10, lr=1e-3, alpha=0.05)
 #%%
 # 1) Fix one mixture and one point cloud
 gmm_fixed, X_fixed, S_fixed = sample_batch_from_gmm(n=1000, K=2)
@@ -428,7 +430,6 @@ plot_scores(model, X_fixed, gmm_fixed, arrow_idx, title_prefix="Transformer (uni
 
 #%%
 # Benchmark inference time vs number of points for Transformer (model) and MLP (mlp)
-
 
 def _sync():
     if torch.cuda.is_available():
@@ -501,8 +502,52 @@ def _bench_mlp_gd_step(mlp_ref, X_max, ns, lr=1e-3, alpha=0.05, wd=0.0, clip=1.0
         del mlp_tmp, opt
     return times_ms
 
+# -------- KDE + autodiff score benchmark --------
+def _kde_logp_and_score_autodiff(X_query, X_centers, bandwidth):
+    """
+    X_query: (n,2) requires_grad True
+    X_centers: (m,2) detached (treated as constants)
+    Returns: logp (n,), score (n,2) via autograd
+    """
+    n, d = X_query.shape
+    m = X_centers.shape[0]
+    h2 = bandwidth * bandwidth
+    # pairwise squared distances (n, m)
+    diff = X_query.unsqueeze(1) - X_centers.unsqueeze(0)  # (n,m,2)
+    sq = (diff * diff).sum(dim=-1)                        # (n,m)
+    log_norm = 0.5 * d * math.log(2 * math.pi * h2)
+    log_kernel = -0.5 * sq / h2 - log_norm               # (n,m)
+    logp = torch.logsumexp(log_kernel, dim=1) - math.log(m)  # (n,)
+    # score via autograd
+    grad = torch.autograd.grad(logp.sum(), X_query, retain_graph=False, create_graph=False)[0]  # (n,2)
+    return logp, grad
+
+def _bench_kde_autodiff(X_max, ns, bandwidth=0.3, warmup=2, repeats=3):
+    """
+    Benchmarks time to compute KDE log-density and score via autograd
+    for queries equal to the centers (leave-in), but gradients NOT
+    flowing into centers (centers detached).
+    """
+    times_ms = []
+    for n in tqdm.tqdm(ns):
+        Xn_centers = X_max[0, :n, :].detach()  # (n,2) constants
+        # Warmup (unmeasured)
+        for _ in range(warmup):
+            Xn = Xn_centers.clone().requires_grad_(True)
+            _kde_logp_and_score_autodiff(Xn, Xn_centers, bandwidth)
+        _sync()
+        # Timed repeats
+        t0 = time.perf_counter()
+        for _ in range(repeats):
+            Xn = Xn_centers.clone().requires_grad_(True)
+            _kde_logp_and_score_autodiff(Xn, Xn_centers, bandwidth)
+        _sync()
+        t1 = time.perf_counter()
+        times_ms.append(1000.0 * (t1 - t0) / repeats)
+    return times_ms
+
 # prepare inputs once (max size)
-ns = [2 ** k for k in range(4, 17)]
+ns = [2 ** k for k in range(4, 15)]
 Nmax = ns[-1]
 X_max = torch.randn(1, Nmax, 2, device=device)
 
@@ -513,16 +558,23 @@ if "mlp" not in globals():
 model.eval()
 mlp.eval()
 
-warmup = 50
+warmup = 10
 times_model    = _bench_model(model, X_max, ns, warmup=warmup, repeats=5)
 times_mlp      = _bench_model(mlp,   X_max, ns, warmup=warmup, repeats=5)
 times_mlp_gd   = _bench_mlp_gd_step(mlp, X_max, ns, lr=1e-3, alpha=0.05, warmup=warmup, repeats=5)
+
+# KDE is O(n^2) memory/time; restrict to manageable ns
+max_n_kde = 2**13  # adjust if needed based on your GPU/CPU memory
+ns_kde = [n for n in ns if n <= max_n_kde]
+# times_kde = _bench_kde_autodiff(X_max, ns_kde, bandwidth=0.3, warmup=3, repeats=3)
 
 # Plot
 plt.figure(figsize=(7, 5))
 plt.plot(ns, times_model, "-o", label="Transformer (model) inference")
 plt.plot(ns, times_mlp, "-o", label="MLP (mlp) inference")
 plt.plot(ns, times_mlp_gd, "-o", label="MLP GD step (implicit loss)")
+if ns_kde:
+    plt.plot(ns_kde, times_kde, "-o", label="KDE+autodiff score")
 plt.xscale("log", base=2)
 plt.yscale("log")
 plt.xlabel("n (number of points)")
@@ -535,9 +587,22 @@ plt.show()
 
 #%%
 # Build and display a timing table (console + matplotlib)
-headers = ["n", "Transformer (ms)", "MLP (ms)", "MLP GD step (ms)"]
-rows_num = list(zip(ns, times_model, times_mlp, times_mlp_gd))
-rows_str = [[f"{n}", f"{t0:.3f}", f"{t1:.3f}", f"{t2:.3f}"] for n, t0, t1, t2 in rows_num]
+headers = ["n", "Transformer (ms)", "MLP (ms)", "MLP GD step (ms)", "KDE+autodiff (ms)"]
+kde_time_by_n = {n: t for n, t in zip(ns_kde, times_kde)}
+rows_num = []
+for n, t0, t1, t2 in zip(ns, times_model, times_mlp, times_mlp_gd):
+    t_kde = kde_time_by_n.get(n, None)
+    rows_num.append((n, t0, t1, t2, t_kde))
+
+rows_str = []
+for n, t0, t1, t2, tk in rows_num:
+    rows_str.append([
+        f"{n}",
+        f"{t0:.3f}",
+        f"{t1:.3f}",
+        f"{t2:.3f}",
+        ("-" if tk is None else f"{tk:.3f}")
+    ])
 
 # Console table
 col_widths = [max(len(h), max((len(r[i]) for r in rows_str), default=0)) for i, h in enumerate(headers)]
