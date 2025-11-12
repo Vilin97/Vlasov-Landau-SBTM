@@ -4,8 +4,6 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 from functools import partial
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 import jax.lax as lax
 import time
 # jax.config.update("jax_enable_x64", True) # float64 is ~12x slower than float32
@@ -127,8 +125,8 @@ def score_kde_stream(x, v, cells, eta, eps=1e-12, hv=None, jchunk=2048):
     return (mu - v) * inv_hv2
 
 # THIS IS THE BEST VERSION
-# with n=4e5, M=100, dv=2, takes ~6s and 70Mb memory
-# with n=1e6, M=100, dv=2, takes ~38s and 120Mb memory
+# with fp32, n=4e5, M=100, dv=2, takes ~6s and 70Mb memory
+# with fp32, n=1e6, M=100, dv=2, takes ~38s and 120Mb memory
 @partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
 def score_kde_blocked(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
     L = eta * cells.size
