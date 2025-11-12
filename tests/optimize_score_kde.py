@@ -1,9 +1,5 @@
 #%%
 "Optimize the score_kde functions"
-import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"]="platform"
-
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -12,7 +8,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import jax.lax as lax
 import time
-jax.config.update("jax_enable_x64", True) # float64 is ~12x slower than float32
+# jax.config.update("jax_enable_x64", True) # float64 is ~12x slower than float32
 
 # runtime
 def bench(fn, *args, repeat=3, name=None, **kwargs):
@@ -36,23 +32,6 @@ def cost(fn, *args, name=None, **kwargs):
     fl = ca.get("flops", 0)
     print(f"[{name or fn.__name__}] bytes_accessed={ba/1e6:.1f} MB, flops={fl/1e9:.2f} GFLOP")
     return comp
-
-#%%
-# prepare data
-seed = 42
-dx = 1       # Position dimension
-dv = 2       # Velocity dimension
-k = 0.5
-L = 2 * jnp.pi / k   # ~12.566
-n = 10**5    # number of particles
-M = 100      # number of cells
-eta = L / M  # cell size
-cells = (jnp.arange(M) + 0.5) * eta
-
-key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
-v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
-v = v - jnp.mean(v, axis=0)
-x = jr.uniform(key_x, shape=(n,)) * L
 
 #%%
 def _silverman_bandwidth(v, eps=1e-12):
@@ -148,6 +127,8 @@ def score_kde_stream(x, v, cells, eta, eps=1e-12, hv=None, jchunk=2048):
     return (mu - v) * inv_hv2
 
 # THIS IS THE BEST VERSION
+# with n=4e5, M=100, dv=2, takes ~6s and 70Mb memory
+# with n=1e6, M=100, dv=2, takes ~38s and 120Mb memory
 @partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
 def score_kde_blocked(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
     L = eta * cells.size
@@ -224,23 +205,38 @@ def score_kde_blocked(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=
     return (mu - v) * inv_hv2
 
 #%%
+# prepare data
+seed = 42
+dx = 1       # Position dimension
+dv = 2       # Velocity dimension
+k = 0.5
+L = 2 * jnp.pi / k   # ~12.566
+n = 10**6    # number of particles
+M = 100      # number of cells
+eta = L / M  # cell size
+cells = (jnp.arange(M) + 0.5) * eta
+
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
+v = v - jnp.mean(v, axis=0)
+x = jr.uniform(key_x, shape=(n,)) * L
+
+#%%
 # benchmark runtime and memory
 # s_naive = score_kde_naive(x, v, cells, eta)
-s_stream = score_kde_stream(x, v, cells, eta)
-s_blocked = score_kde_blocked(x, v, cells, eta)
+# s_stream = score_kde_stream(x, v, cells, eta)
+# s_blocked = score_kde_blocked(x, v, cells, eta)
 # print("Max abs diff stream vs naive:", jnp.max(jnp.abs(s_stream - s_naive)))
 # print("Max abs diff blocked vs naive:", jnp.max(jnp.abs(s_blocked - s_naive)))
 
 # bench(score_kde_naive, x, v, cells, eta, name="naive")
 # cost(score_kde_naive, x, v, cells, eta, name="naive")
 
-for jchunk in [1024, 2048]:
-    bench(score_kde_stream, x, v, cells, eta, jchunk=jchunk, name=f"stream jchunk={jchunk}")
-    cost(score_kde_stream, x, v, cells, eta, name=f"stream jchunk={jchunk}", jchunk=jchunk)
+# bench(score_kde_stream, x, v, cells, eta, name=f"stream")
+# cost(score_kde_stream, x, v, cells, eta, name=f"stream")
 
-for ichunk, jchunk in [(2048, 2048), (4096, 4096)]:
-    bench(score_kde_blocked, x, v, cells, eta, ichunk=ichunk, jchunk=jchunk, name=f"blocked ichunk={ichunk} jchunk={jchunk}")
-    cost(score_kde_blocked, x, v, cells, eta, name=f"blocked ichunk={ichunk} jchunk={jchunk}", ichunk=ichunk, jchunk=jchunk)
+bench(score_kde_blocked, x, v, cells, eta, name=f"blocked")
+cost(score_kde_blocked, x, v, cells, eta, name=f"blocked")
 
 # bench(kde_score_vmap, x, v[:,0], eta, eta, L, name="kde_score_vmap")
 # cost(kde_score_vmap, x, v[:,0], eta, eta, L, name="kde_score_vmap")

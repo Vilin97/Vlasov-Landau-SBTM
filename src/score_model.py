@@ -155,7 +155,7 @@ def _silverman_bandwidth(v, eps=1e-12):
         return sigma * n ** (-1.0 / (dv + 4.0))  # (dv,)
 
 @partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
-def score_kde_blocked(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
+def score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
     if hv is None: hv = _silverman_bandwidth(v, eps)
     L = eta * cells.size
     n, dv = v.shape
