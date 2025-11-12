@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import jax.lax as lax
 from functools import partial
 
-# jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 
 def visualize_initial(x, v, cells, E, rho, eta, L, v_target=lambda v: jax.scipy.stats.norm.pdf(v, 0, 1)):
     """Visualize initial data."""
@@ -374,9 +374,9 @@ for _ in tqdm(range(num_steps)):
     x, v, E = vlasov_step(x, v, E, cells, eta, dt, L, w)
     
     # collision step
-    s = scaled_score_kde(x, v, cells, eta)
-    Q = collision(x, v, s, eta, gamma, n, L, w)
-    v = v - dt * C * Q
+    # s = scaled_score_kde(x, v, cells, eta)
+    # Q = collision(x, v, s, eta, gamma, n, L, w)
+    # v = v - dt * C * Q
 
     E = E - jnp.mean(E)
     t += dt
@@ -428,6 +428,7 @@ plt.yscale('log')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
+plt.savefig(f"data/plots/electric_field_norm/collision_1d_2v/landau_damping_n{n:.0e}_M{M}_dt{dt}.png")
 plt.show()
 
 #%%
