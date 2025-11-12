@@ -4,6 +4,7 @@ from functools import partial
 from flax import nnx
 import orbax.checkpoint as ocp
 import os
+import jax.lax as lax
 
 class MLPScoreModel(nnx.Module):
     """MLP-based implementation of a score model."""
@@ -147,23 +148,83 @@ class ResNetScoreModel(nnx.Module):
         
         return outputs
 
-"KDE score model for 1D space and velocity"
-def psi_hat(u, eta, L=None):
-    if L is not None:                       # periodic distance
-        u = (u + 0.5 * L) % L - 0.5 * L
-    return jnp.maximum(0., 1. - jnp.abs(u) / eta) / eta
+"KDE score model for 1D space"
+def _silverman_bandwidth(v, eps=1e-12):
+        n, dv = v.shape
+        sigma = jnp.std(v, axis=0, ddof=1) + eps
+        return sigma * n ** (-1.0 / (dv + 4.0))  # (dv,)
 
-@jax.jit
-def kde_score_hat(x, v, eta_x, eta_v, L=None):
-    """∇_v log f for 1-D (x,v) samples via KDE with hat kernels."""
-    eta_x, eta_v = map(jnp.asarray, (eta_x, eta_v))  # make them tracers
-    eps = 1e-12
+@partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
+def score_kde_blocked(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
+    if hv is None: hv = _silverman_bandwidth(v, eps)
+    L = eta * cells.size
+    n, dv = v.shape
+    inv_hv = 1.0 / hv
+    inv_hv2 = inv_hv**2
 
-    def score_single(xi, vi):
-        def log_f(vi_):
-            w_x = psi_hat(xi - x, eta_x, L)          # (N,)
-            w_v = psi_hat(vi_ - v, eta_v)            # (N,)
-            return jnp.log(jnp.mean(w_x * w_v) + eps)
-        return jax.grad(log_f)(vi)                   # scalar grad
+    ni = (n + ichunk - 1) // ichunk
+    nj = (n + jchunk - 1) // jchunk
+    n_pad = ni * ichunk
+    pad = n_pad - n
 
-    return jax.vmap(score_single)(x, v)              # (N,)
+    x_pad = jnp.pad(x, (0, pad))
+    v_pad = jnp.pad(v, ((0, pad), (0, 0)))
+    u_pad = v_pad * inv_hv
+
+    Zp = jnp.zeros((n_pad, 1), v.dtype)
+    Mp = jnp.zeros((n_pad, dv), v.dtype)
+
+    ar_i = jnp.arange(ichunk)
+    ar_j = jnp.arange(jchunk)
+
+    def loop_j(tj, carry2):
+        Zi_, Mi_, Ri, Ui, Vi, Ui2 = carry2
+        j0 = tj * jchunk
+        mj = jnp.minimum(jchunk, n - j0)
+
+        Rj = lax.dynamic_slice(x_pad, (j0,), (jchunk,))
+        Uj = lax.dynamic_slice(u_pad, (j0, 0), (jchunk, dv))
+        Vj = lax.dynamic_slice(v_pad, (j0, 0), (jchunk, dv))
+        Uj2 = jnp.sum(Uj * Uj, axis=1, keepdims=True).T
+        mask_j = (ar_j < mj).astype(v.dtype).reshape(1, jchunk)
+
+        dx = Ri[:, None] - Rj[None, :]
+        dx = (dx + 0.5 * L) % L - 0.5 * L
+        psi = jnp.clip(1.0 - jnp.abs(dx) / eta, 0.0, 1.0)
+
+        G = Ui @ Uj.T
+        Kj = jnp.exp(G - 0.5 * Ui2 - 0.5 * Uj2)
+
+        w = (psi * Kj + eps) * mask_j
+        Zi_ = Zi_ + jnp.sum(w, axis=1, keepdims=True)
+        Mi_ = Mi_ + w @ Vj
+        return Zi_, Mi_, Ri, Ui, Vi, Ui2
+
+    def loop_i(ti, carry):
+        Zc, Mc = carry
+        i0 = ti * ichunk
+        mi = jnp.minimum(ichunk, n - i0)
+
+        Ri = lax.dynamic_slice(x_pad, (i0,), (ichunk,))
+        Ui = lax.dynamic_slice(u_pad, (i0, 0), (ichunk, dv))
+        Vi = lax.dynamic_slice(v_pad, (i0, 0), (ichunk, dv))
+        Ui2 = jnp.sum(Ui * Ui, axis=1, keepdims=True)
+
+        Zi = jnp.zeros((ichunk, 1), v.dtype)
+        Mi = jnp.zeros((ichunk, dv), v.dtype)
+
+        Zi, Mi, *_ = lax.fori_loop(0, nj, loop_j, (Zi, Mi, Ri, Ui, Vi, Ui2))
+
+        mask_i = (ar_i < mi).astype(v.dtype).reshape(ichunk, 1)
+        Zi = Zi * mask_i
+        Mi = Mi * mask_i
+
+        Zc = lax.dynamic_update_slice(Zc, Zi, (i0, 0))
+        Mc = lax.dynamic_update_slice(Mc, Mi, (i0, 0))
+        return Zc, Mc
+
+    Zp, Mp = lax.fori_loop(0, ni, loop_i, (Zp, Mp))
+    Z = Zp[:n]
+    M = Mp[:n]
+    mu = M / Z
+    return (mu - v) * inv_hv2
