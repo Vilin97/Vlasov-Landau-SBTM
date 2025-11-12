@@ -1,107 +1,40 @@
 #%%
-import os
-os.environ["JAX_TRACEBACK_FILTERING"] = "off"
-
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import numpy as np
-from tqdm import tqdm
-
-import src.path
-from src.mesh import Mesh1D
-from src.density import CosineNormal
-from src.score_model import MLPScoreModel, kde_score_hat
-from src.solver import Solver, train_initial_model, psi, evaluate_charge_density, evaluate_field_at_particles, update_positions, update_electric_field, collision, train_score_model
-import src.loss as loss
-from src.path import ROOT, DATA, PLOTS, MODELS
-from scipy.signal import argrelextrema
-import time
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-#%%
-"Initialize parameters"
-seed = 42
-
-# Set constants
-alpha = 0.1  # Perturbation strength
-k = 0.5      # Wave number
-dx = 1       # Position dimension
-dv = 2       # Velocity dimension
-gamma = -dv
-C = 0.1
-qe = 1
-numerical_constants={"qe": qe, "C": C, "gamma": gamma, "alpha": alpha, "k": k}
-
-# Create a mesh
-box_length = 2 * jnp.pi / k
-num_cells = 512
-mesh = Mesh1D(box_length, num_cells)
-
-# Number of particles for simulation
-num_particles = 2**20 # 10^8 takes ~16Gb of VRAM, collisionless
-
-# Create initial density distribution
-initial_density = CosineNormal(alpha=alpha, k=k, dx=dx, dv=dv)
-
-# Create neural network model
-hidden_dims = (1024,)
-model = MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
-# model = None
-
-
-# Define training configuration
-gd_steps = 0
-batch_size = 2**12
-num_batch_steps = gd_steps
-training_config = {
-    "batch_size": 2**12,
-    "num_epochs": 1000, # initial training
-    "abs_tol": 1e-4,
-    "learning_rate": 1e-4,
-    "num_batch_steps": gd_steps  # at each step
-}
-
-cells = mesh.cells()
-eta = mesh.eta
-
-#%%
-"Initialize the solver"
-print(f"C = {C}, alpha={alpha}, N = {num_particles}, num_cells = {num_cells}, box_length = {box_length}, dx = {dx}, dv = {dv}")
-solver = Solver(
-    mesh=mesh,
-    num_particles=num_particles,
-    initial_density=initial_density,
-    initial_nn=model,
-    numerical_constants=numerical_constants,
-    seed=seed,
-    training_config=training_config
-)
-x0, v0, E0 = solver.x, solver.v, solver.E
-x, v, E = x0, v0, E0
-
-box_length = mesh.box_lengths[0]
-rho = evaluate_charge_density(x0, cells, eta, box_length)
-
-#%%
-# Train and save the initial model
-epochs = solver.training_config["num_epochs"]
-path = os.path.join(MODELS, f'landau_damping_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{epochs}')
-if not os.path.exists(path):
-    train_initial_model(model, x0, v0, initial_density, solver.training_config, verbose=True)
-    model.save(path)
-
-time.sleep(1)
-solver.score_model.load(path)
-s = solver.score_model(x, v)
-
-#%%
-from functools import partial
-import jax, jax.numpy as jnp
+import jax.random as jr
 from jax import lax
-from jax import vmap
+import time
+from functools import partial
+import os
 
+# jax.config.update("jax_enable_x64", True)
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+# runtime
+def bench(fn, *args, repeat=3, name=None, **kwargs):
+    # warmup (exclude compile time)
+    out = fn(*args, **kwargs)
+    jax.block_until_ready(out)
+    times = []
+    for _ in range(repeat):
+        t0 = time.perf_counter()
+        out = fn(*args, **kwargs)
+        jax.block_until_ready(out)
+        times.append(time.perf_counter() - t0)
+    print(f"[{name or fn.__name__}] {min(times)*1e3:.2f} ms (min of {repeat})")
+    return out
+
+# memory, flops
+def cost(fn, *args, name=None, **kwargs):
+    comp = fn.lower(*args, **kwargs).compile()
+    ca = comp.cost_analysis()
+    ba = ca.get("bytes accessed", 0)
+    fl = ca.get("flops", 0)
+    print(f"[{name or fn.__name__}] bytes_accessed={ba/1e6:.1f} MB, flops={fl/1e9:.2f} GFLOP")
+    return comp
+
+
+#%%
 @jax.jit
 def psi(x, eta, box_length):
     x = (x + 0.5 * box_length) % box_length - 0.5 * box_length   # centered_mod
@@ -169,7 +102,6 @@ def collision(x, v, s, eta, C, gamma, box_length, num_cells):
     rev = rev.at[order].set(jnp.arange(N))
     return w_particle * Q_sorted[rev]
 
-#%%
 def A_apply(dv, ds, C, gamma, eps=1e-10):
     r2   = jnp.dot(dv, dv) + eps          # ‖dv‖²
     r_g  = r2 ** (gamma / 2)              # ‖dv‖^γ
@@ -232,32 +164,104 @@ def collision_2(x, v, s, eta, C, gamma, box_length, num_cells):
     rev = rev.at[order].set(jnp.arange(N))
     return w_particle * Q_sorted[rev]
 
+# THERE IS NO BEST VERSION
+# with fp32, n=4e5, M=100, dv=2, takes ~1.2s and 250Mb memory
+# with fp32, n=1e6, M=100, dv=2, takes ~6.4s and 640Mb memory
+@partial(jax.jit, static_argnames=['num_cells'])
+def collision_3(x, v, s, eta, gamma, num_cells, box_length, w):
+    """ 
+    Q_i = w Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) A(v_i−v_j)(s_i−s_j) with the linear-hat kernel ψ of width eta, periodic on [0,L]. 
+    Complexity O(N η/L). 
+    """
+    def A_apply(dv, ds, gamma, eps=1e-14):
+        v2 = jnp.sum(dv * dv, axis=-1, keepdims=True) + eps
+        vg = v2 ** (gamma / 2)
+        dvds = jnp.sum(dv * ds, axis=-1, keepdims=True)
+        return vg * (v2 * ds - dvds * dv)
+    if x.ndim == 2:
+        x = x[:, 0]
+    N, d   = v.shape
+    M      = num_cells
+
+    # bin + sort
+    cell = (jnp.floor(x / eta).astype(jnp.int32)) % M
+    order = jnp.argsort(cell)
+    x, v, s, cell = x[order], v[order], s[order], cell[order]
+
+    counts = jnp.bincount(cell, length=M)
+    starts = jnp.cumsum(jnp.concatenate([jnp.array([0]), counts[:-1]]))
+    
+    def centered_mod(x, L):
+        "centered_mod(x, L) in [-L/2, L/2]"
+        return (x + L/2) % L - L/2
+
+    def psi(x, eta, box_length):
+        "psi_eta(x) = max(0, 1-|x|/eta) / eta."
+        x = centered_mod(x, box_length)
+        kernel = jnp.maximum(0.0, 1.0 - jnp.abs(x / eta))
+        return kernel / eta
+
+    def Q_single(i):
+        xi, vi, si = x[i], v[i], s[i]
+        ci = cell[i]
+        acc = jnp.zeros(d)
+
+        for c in ((ci - 1) % M, ci, (ci + 1) % M):
+            start = starts[c]
+            end   = start + counts[c]
+
+            def add_j(j, accj):
+                ψ  = psi(xi - x[j], eta, box_length)
+                dv = vi - v[j]
+                ds = si - s[j]
+                return accj + ψ * A_apply(dv, ds, gamma)
+
+            acc = lax.fori_loop(start, end, add_j, acc)
+        return acc
+
+    Q_sorted = jax.vmap(Q_single)(jnp.arange(N))
+
+    rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
+    return w * Q_sorted[rev]
 #%%
-collision_3(x, v, s, eta, C, gamma, box_length, num_cells, 2500)
+# prepare data
+seed = 42
+dx = 1       # Position dimension
+dv = 2       # Velocity dimension
+k = 0.5
+L = 2 * jnp.pi / k   # ~12.566
+n = 4*10**5    # number of particles
+M = 100      # number of cells
+eta = L / M  # cell size
+cells = (jnp.arange(M) + 0.5) * eta
 
-# Compute collision results from both functions
-t1 = time.time()
-result_collision = collision_2(x, v, s, eta, C, gamma, box_length, num_cells).block_until_ready()
-t2 = time.time()
-print(f"Original collision took {t2 - t1:.4f} seconds")
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
+v = v - jnp.mean(v, axis=0)
+x = jr.uniform(key_x, shape=(n,1)) * L
+s = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
 
-t1 = time.time()
-result_collision_new = collision_3(x, v, s, eta, C, gamma, box_length, num_cells, 2500).block_until_ready()
-t2 = time.time()
-print(f"new collision took {t2 - t1:.4f} seconds")
+C = 1.0
+gamma = -3.0
+box_length = L
+num_cells = M
 
-# Compute relative error
-abs_diff = jnp.abs(result_collision - result_collision_new)
-norm_collision = jnp.linalg.norm(result_collision)
-norm_diff = jnp.linalg.norm(abs_diff)
-relative_error = norm_diff / norm_collision
+#%%
+# check accuracy
+result_collision = collision(x, v, s, eta, C, gamma, box_length, num_cells)
+result_collision_2 = collision_2(x, v, s, eta, C, gamma, box_length, num_cells)
+result_collision_3 = collision_3(x, v, s, eta, gamma, num_cells, box_length, L / n)
+abs_diff_2 = jnp.abs(result_collision - result_collision_2)
+abs_diff_3 = jnp.abs(result_collision - result_collision_3)
+print(f"Max abs diff collision vs collision_2: {jnp.max(abs_diff_2):.6e}")
+print(f"Max abs diff collision vs collision_3: {jnp.max(abs_diff_3):.6e}")
 
-print(f"Relative error (L2 norm): {relative_error * 100:.6f}%")
-print(f"Max absolute difference: {jnp.max(abs_diff):.6e}")
-print(f"Mean absolute difference: {jnp.mean(abs_diff):.6e}")
+#%%
+# benchmark runtime and memory
+bench(collision, x, v, s, eta, C, gamma, box_length, num_cells, name="collision")
+cost(collision, x, v, s, eta, C, gamma, box_length, num_cells, name="collision")
+bench(collision_2, x, v, s, eta, C, gamma, box_length, num_cells, name="collision_2")
+cost(collision_2, x, v, s, eta, C, gamma, box_length, num_cells, name="collision_2")
+bench(collision_3, x, v, s, eta, gamma, num_cells, box_length, L / n, name="collision_3")
+cost(collision_3, x, v, s, eta, gamma, num_cells, box_length, L / n, name="collision_3")
 # %%
-s = solver.score_model(x, v)
-collision(x, v, s, eta, C, gamma, box_length, num_cells).block_until_ready()
-
-with jax.profiler.trace(DATA+"/tmp/jax-trace", create_perfetto_link=False):
-    _ = collision(x, v, s, eta, C, gamma, box_length, num_cells).block_until_ready()
