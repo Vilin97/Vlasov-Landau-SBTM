@@ -9,7 +9,11 @@ import matplotlib.pyplot as plt
 import jax.lax as lax
 from functools import partial
 
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 jax.config.update("jax_enable_x64", True)
+# TODO: make a main with command line args
 
 def visualize_initial(x, v, cells, E, rho, eta, L, v_target=lambda v: jax.scipy.stats.norm.pdf(v, 0, 1)):
     """Visualize initial data."""
@@ -294,7 +298,7 @@ dv = 2       # Velocity dimension
 alpha = 0.1  # amplitude of initial density perturbation
 k = 0.5
 L = 2 * jnp.pi / k   # ~12.566
-n = 10**5    # number of particles
+n = 10**6    # number of particles
 M = 100       # number of cells
 dt = 0.02    # time step
 eta = L / M  # cell size
@@ -324,7 +328,7 @@ num_steps = int(final_time / dt)
 t = 0.0
 E_L2 = [jnp.sqrt(jnp.sum(E**2) * eta)]
 
-score_method = 'kde'
+score_method = 'scaled_kde'
 if score_method == 'kde':
     score_fn = score_kde
 elif score_method == 'scaled_kde':
@@ -332,7 +336,7 @@ elif score_method == 'scaled_kde':
 else:
     raise ValueError(f"Unknown score method: {score_method}")
 
-print(f"Landau Damping with n={n}, M={M}, dt={dt}, eta={eta}, score_method={score_method}")
+print(f"Landau Damping with n={n:.0e}, M={M}, dt={dt}, eta={eta}, score_method={score_method}")
 #%%
 s_kde = score_fn(x, v, cells, eta)
 s_true = -v
