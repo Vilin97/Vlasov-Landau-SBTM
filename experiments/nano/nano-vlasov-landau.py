@@ -282,6 +282,7 @@ def collision(x, v, s, eta, gamma, num_cells, box_length, w):
 
     rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
     return w * Q_sorted[rev]
+
 #%%
 #------------------------------------------------------------------------------
 # set up initial data
@@ -323,8 +324,17 @@ num_steps = int(final_time / dt)
 t = 0.0
 E_L2 = [jnp.sqrt(jnp.sum(E**2) * eta)]
 
+score_method = 'kde'
+if score_method == 'kde':
+    score_fn = score_kde
+elif score_method == 'scaled_kde':
+    score_fn = scaled_score_kde
+else:
+    raise ValueError(f"Unknown score method: {score_method}")
+
+print(f"Landau Damping with n={n}, M={M}, dt={dt}, eta={eta}, score_method={score_method}")
 #%%
-s_kde = scaled_score_kde(x, v, cells, eta)
+s_kde = score_fn(x, v, cells, eta)
 s_true = -v
 
 # Subsample for readability
@@ -374,9 +384,9 @@ for _ in tqdm(range(num_steps)):
     x, v, E = vlasov_step(x, v, E, cells, eta, dt, L, w)
     
     # collision step
-    # s = scaled_score_kde(x, v, cells, eta)
-    # Q = collision(x, v, s, eta, gamma, n, L, w)
-    # v = v - dt * C * Q
+    s = score_fn(x, v, cells, eta)
+    Q = collision(x, v, s, eta, gamma, n, L, w)
+    v = v - dt * C * Q
 
     E = E - jnp.mean(E)
     t += dt
@@ -428,7 +438,7 @@ plt.yscale('log')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(f"data/plots/electric_field_norm/collision_1d_2v/landau_damping_n{n:.0e}_M{M}_dt{dt}.png")
+plt.savefig(f"data/plots/electric_field_norm/collision_1d_2v/landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}.png")
 plt.show()
 
 #%%
