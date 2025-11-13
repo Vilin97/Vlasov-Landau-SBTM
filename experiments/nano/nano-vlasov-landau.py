@@ -308,7 +308,7 @@ C = 0.05     # collision strength
 gamma = -dv  # Coulomb interaction
 
 key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
-v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
+v = jr.normal(key_v, (n, dv))
 v = v - jnp.mean(v, axis=0)
 
 def spatial_density(x):
@@ -442,6 +442,7 @@ plt.yscale('log')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
+os.makedirs("data/plots/electric_field_norm/collision_1d_2v/", exist_ok=True)
 plt.savefig(f"data/plots/electric_field_norm/collision_1d_2v/landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}.png")
 plt.show()
 
