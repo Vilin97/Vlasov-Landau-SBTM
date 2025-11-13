@@ -1,5 +1,5 @@
 # Self-contained Vlasov–Landau solver with CLI + wandb logging
-# Run with `python vlasov_landau.py --n 1e6 --M 100 --dt 0.02 --gpu 0 --fp64 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method scaled_kde --wandb_run_name "n1e6_M100_dt0.02_C0.05_scaled_kde"`
+# Run with `python experiments/vlasov-landau-damping.py --n 100_000 --M 100 --dt 0.02 --gpu 0 --fp64 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method scaled_kde --wandb_run_name "n1e6_M100_dt0.02_C0.05_scaled_kde"`
 
 import argparse
 import os
@@ -358,6 +358,8 @@ def main():
     else:
         raise ValueError(f"Unknown score method: {score_method}")
 
+    print(f"Args: {args}")
+
     def spatial_density(x):
         return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
 
@@ -506,9 +508,9 @@ def main():
     plt.legend()
     plt.tight_layout()
 
-    outdir = "data/plots/electric_field_norm/collision_1d_2v/"
+    outdir = f"data/plots/electric_field_norm/collision_1d_{dv}v/"
     os.makedirs(outdir, exist_ok=True)
-    fname = f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}.png"
+    fname = f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_{score_method}.png"
     path = os.path.join(outdir, fname)
     plt.savefig(path)
 
