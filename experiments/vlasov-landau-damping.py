@@ -1,5 +1,5 @@
 # Self-contained Vlasov–Landau solver with CLI + wandb logging
-# Run with `python experiments/vlasov-landau-damping.py --n 100_000 --M 100 --dt 0.02 --gpu 0 --fp64 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method scaled_kde --wandb_run_name "n1e6_M100_dt0.02_C0.05_scaled_kde"`
+# Run with `python experiments/vlasov-landau-damping.py --n 1000_000 --M 100 --dt 0.02 --gpu 0 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method scaled_kde --wandb_run_name "n1e6_M100_dt0.02_C0.05_scaled_kde"`
 
 import argparse
 import os
@@ -13,7 +13,8 @@ from functools import partial
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import wandb
-
+import numpy as np
+from scipy.signal import argrelextrema
 
 #------------------------------------------------------------------------------
 # Utilities
@@ -216,21 +217,11 @@ def score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
     return (mu - v) * inv_hv2
 
 
-def sd_score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
-    """Score-debiased KDE score estimator."""
-    if hv is None:
-        hv = _silverman_bandwidth(v, eps)
-    s_kde = score_kde(x, v, cells, eta, eps, hv, ichunk, jchunk)
-    v_sd = v + (hv ** 2) / 2 * s_kde
-    return score_kde(x, v_sd, cells, eta, eps, hv, ichunk, jchunk)
-
-
 def scaled_score_kde(x, v, cells, eta, eta_scale=4, hv_scale=4, output_scale=1.3, **kwargs):
     """Empirically tuned scaled KDE score."""
     hv = _silverman_bandwidth(v) * hv_scale
     s_kde = score_kde(x, v, cells, eta * eta_scale, hv=hv, **kwargs) * output_scale
     return s_kde
-
 
 #------------------------------------------------------------------------------
 # Landau collision operator
@@ -302,7 +293,7 @@ def parse_args():
     p.add_argument("--M", type=int, default=100, help="Number of spatial cells")
     p.add_argument("--dt", type=float, default=0.02, help="Time step")
     p.add_argument("--gpu", type=int, default=0, help="CUDA_VISIBLE_DEVICES index")
-    p.add_argument("--fp64", action="store_true", help="Enable float64 (jax_enable_x64)")
+    p.add_argument("--fp32", action="store_true", help="Use float32 instead of float64")
     p.add_argument("--dv", type=int, default=2, help="Velocity dimension")
     p.add_argument("--final_time", type=float, default=15.0, help="Final simulation time")
     p.add_argument("--C", type=float, default=0.05, help="Collision strength")
@@ -312,7 +303,7 @@ def parse_args():
     p.add_argument("--wandb_project", type=str, default="vlasov_landau", help="wandb project name")
     p.add_argument("--wandb_run_name", type=str, default="landau_damping", help="wandb run name")
     p.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
-    p.add_argument("--log_every", type=int, default=10, help="Log every k steps")
+    p.add_argument("--log_every", type=int, default=1, help="Log every k steps")
     return p.parse_args()
 
 
@@ -321,7 +312,7 @@ def main():
 
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-    jax.config.update("jax_enable_x64", args.fp64)
+    jax.config.update("jax_enable_x64", not args.fp32)
 
     wandb_run = wandb.init(
         project=args.wandb_project,
@@ -385,7 +376,7 @@ def main():
 
     print(
         f"Landau Damping with n={n:.0e}, M={M}, dt={dt}, eta={float(eta):.4f}, "
-        f"score_method={args.score_method}, dv={dv}, C={C}, alpha={alpha}, gpu={args.gpu}, fp64={args.fp64}"
+        f"score_method={args.score_method}, dv={dv}, C={C}, alpha={alpha}, gpu={args.gpu}, fp32={args.fp32}"
     )
 
     # Quiver of scores before time stepping
@@ -439,9 +430,10 @@ def main():
     for istep in tqdm(range(num_steps)):
         x, v, E = vlasov_step(x, v, E, cells, eta, dt, L, w)
 
-        s = score_fn(x, v, cells, eta)
-        Q = collision(x, v, s, eta, gamma, n, L, w)
-        v = v - dt * C * Q
+        if C>0:
+            s = score_fn(x, v, cells, eta)
+            Q = collision(x, v, s, eta, gamma, n, L, w)
+            v = v - dt * C * Q
 
         E = E - jnp.mean(E)
         t += dt
@@ -462,9 +454,6 @@ def main():
             )
 
     # Post-processing: Landau damping fit
-    import numpy as np
-    from scipy.signal import argrelextrema
-
     t_grid = jnp.linspace(0, final_time, num_steps + 1)
 
     fig_final = plt.figure(figsize=(6, 4))
@@ -514,7 +503,7 @@ def main():
     path = os.path.join(outdir, fname)
     plt.savefig(path)
 
-    wandb.log({"landau_damping": wandb.Image(fig_final)}, step=num_steps)
+    wandb.log({"landau_damping": wandb.Image(fig_final)}, step=num_steps+2)
     wandb.save(path)
 
     plt.show()
