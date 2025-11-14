@@ -13,7 +13,6 @@ import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 jax.config.update("jax_enable_x64", True)
-# TODO: make a main with command line args
 
 def visualize_initial(x, v, cells, E, rho, eta, L, v_target=lambda v: jax.scipy.stats.norm.pdf(v, 0, 1)):
     """Visualize initial data."""
@@ -132,15 +131,175 @@ def _silverman_bandwidth(v, eps=1e-12):
     sigma = jnp.std(v, axis=0, ddof=1) + eps
     return sigma * n ** (-1.0 / (dv + 4.0))  # (dv,)
 
-@partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
-def score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
+@partial(jax.jit, static_argnames=['max_ppc'])
+def _score_kde_local_impl(x, v, cells, eta, eps=1e-12, hv=None, max_ppc=4096):
     if x.ndim == 2:
         x = x[:, 0]
+    if hv is None:
+        hv = _silverman_bandwidth(v, eps)
+
+    n, dv = v.shape
+    M = cells.size
+    L = eta * M
+    inv_hv = 1.0 / hv
+    inv_hv2 = inv_hv ** 2
+
+    idx = jnp.floor(x / eta).astype(jnp.int32) % M
+    order = jnp.argsort(idx)
+    x_s = x[order]
+    v_s = v[order]
+    idx_s = idx[order]
+
+    counts = jnp.bincount(idx_s, length=M).astype(jnp.int32)
+    cell_ofs = jnp.cumsum(
+        jnp.concatenate([jnp.array([0], dtype=jnp.int32), counts[:-1]]),
+        dtype=jnp.int32,
+    )
+
+    Xc = jnp.zeros((M, max_ppc), x.dtype)
+    Vc = jnp.zeros((M, max_ppc, dv), v.dtype)
+    maskc = jnp.zeros((M, max_ppc), x.dtype)
+    idx_map = -jnp.ones((M, max_ppc), jnp.int32)
+    ar_ppc = jnp.arange(max_ppc, dtype=jnp.int32)
+
+    def fill_cell(c, carry):
+        Xc, Vc, maskc, idx_map = carry
+        cnt = counts[c]
+        base = cell_ofs[c]
+        valid = ar_ppc < cnt
+        gidx = base + ar_ppc
+        gidx = jnp.where(valid, gidx, 0)
+        Xc = Xc.at[c].set(jnp.where(valid, x_s[gidx], 0.0))
+        Vc = Vc.at[c].set(jnp.where(valid[:, None], v_s[gidx], 0.0))
+        maskc = maskc.at[c].set(valid.astype(x.dtype))
+        idx_map = idx_map.at[c].set(jnp.where(valid, gidx, -1))
+        return Xc, Vc, maskc, idx_map
+
+    Xc, Vc, maskc, idx_map = lax.fori_loop(
+        0, M, fill_cell, (Xc, Vc, maskc, idx_map)
+    )
+
+    Uc = Vc * inv_hv
+    U2c = jnp.sum(Uc * Uc, axis=-1, keepdims=True)
+
+    Zc = jnp.zeros((M, max_ppc, 1), v.dtype)
+    Mc = jnp.zeros((M, max_ppc, dv), v.dtype)
+
+    def body_cell(c, carry):
+        Zc, Mc = carry
+        Xi = Xc[c]                    # (max_ppc,)
+        Vi = Vc[c]                    # (max_ppc,dv)
+        Ui = Uc[c]
+        Ui2 = U2c[c]                  # (max_ppc,1)
+        mask_i = maskc[c][:, None]    # (max_ppc,1)
+
+        c0 = (c - 1) % M
+        c1 = c
+        c2 = (c + 1) % M
+        Xj = jnp.concatenate([Xc[c0], Xc[c1], Xc[c2]], axis=0)        # (3*max_ppc,)
+        Vj = jnp.concatenate([Vc[c0], Vc[c1], Vc[c2]], axis=0)        # (3*max_ppc,dv)
+        Uj = jnp.concatenate([Uc[c0], Uc[c1], Uc[c2]], axis=0)
+        Uj2 = jnp.concatenate([U2c[c0], U2c[c1], U2c[c2]], axis=0)    # (3*max_ppc,1)
+        mask_j = jnp.concatenate(
+            [maskc[c0], maskc[c1], maskc[c2]], axis=0
+        )[:, None]                                                     # (3*max_ppc,1)
+
+        dx = Xi[:, None] - Xj[None, :]
+        dx = (dx + 0.5 * L) % L - 0.5 * L
+        psi = jnp.maximum(0.0, 1.0 - jnp.abs(dx) / eta)               # hat in x
+
+        G = Ui @ Uj.T
+        K = jnp.exp(G - 0.5 * Ui2 - 0.5 * Uj2.T)
+
+        mask = mask_i * mask_j.T
+        w = (psi * K + eps) * mask
+
+        Z_local = jnp.sum(w, axis=1, keepdims=True) * mask_i
+        M_local = (w @ Vj) * mask_i
+
+        Zc = Zc.at[c].set(Z_local)
+        Mc = Mc.at[c].set(M_local)
+        return Zc, Mc
+
+    Zc, Mc = lax.fori_loop(0, M, body_cell, (Zc, Mc))
+
+    idx_flat = idx_map.reshape(-1)
+    Z_flat = Zc.reshape(-1, 1)
+    M_flat = Mc.reshape(-1, dv)
+    valid = idx_flat >= 0
+    idx_valid = jnp.where(valid, idx_flat, 0)
+    Z_contrib = Z_flat * valid[:, None]
+    M_contrib = M_flat * valid[:, None]
+
+    Zs = jnp.zeros((n, 1), v.dtype)
+    Ms = jnp.zeros((n, dv), v.dtype)
+    Zs = Zs.at[idx_valid].add(Z_contrib)
+    Ms = Ms.at[idx_valid].add(M_contrib)
+
+    inv_order = jnp.empty_like(order)
+    inv_order = inv_order.at[order].set(jnp.arange(n, dtype=order.dtype))
+
+    Z = Zs[inv_order]
+    M = Ms[inv_order]
+    
+    Z_safe = jnp.where(Z > 0, Z, eps)
+    mu = M / Z_safe
+    return (mu - v) * inv_hv2
+
+# this is ~11 times faster than score_kde_blocked with n=1e5 and M=50
+def score_kde(x, v, cells, eta, eps=1e-12, hv=None):
+    if hv is None:
+        hv = _silverman_bandwidth(v, eps)
+
+    if x.ndim == 2:
+        x1d = x[:, 0]
+    else:
+        x1d = x
+    M = cells.size
+    idx = jnp.floor(x1d / eta).astype(jnp.int32) % M
+    counts = jnp.bincount(idx, length=M)
+    max_count = int(jax.device_get(jnp.max(counts)))
+    m = max(1, max_count)
+    max_ppc = ((m + 99) // 100) * 100  # next multiple of 100 >= m
+
+    return _score_kde_local_impl(x, v, cells, eta, eps, hv, max_ppc)
+
+def sd_score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
+    """
+    Score-debiased KDE score estimator
+    Computes KDE(x,v + hv^2/2 s(x,v))
+    """
     if hv is None: hv = _silverman_bandwidth(v, eps)
+    s_kde = score_kde(x, v, cells, eta, eps, hv, ichunk, jchunk)
+    v_sd = v + (hv ** 2) / 2 * s_kde
+    return score_kde(x, v_sd, cells, eta, eps, hv, ichunk, jchunk)
+
+def scaled_score_kde(x, v, cells, eta, eta_scale=4, hv_scale=4, output_scale=1.3, **kwargs):
+    "Empirically found scalings for better accuracy"
+    hv=_silverman_bandwidth(v) * hv_scale
+    s_kde = score_kde(x, v, cells, eta*eta_scale, hv=hv, **kwargs) * output_scale
+    return s_kde
+
+def _silverman_bandwidth_1d(x, eps=1e-12):
+    n = x.size
+    sigma = jnp.std(x, ddof=1) + eps
+    return sigma * n ** (-1.0 / 5.0)  # d=1
+
+@partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
+def score_kde_gaussx(x, v, cells, eta, eps=1e-12, hv=None, hx=None,
+              ichunk=2048, jchunk=2048):
+    if x.ndim == 2:
+        x = x[:, 0]
+    if hv is None:
+        hv = _silverman_bandwidth(v, eps)
+    if hx is None:
+        hx = _silverman_bandwidth_1d(x, eps)
+
     L = eta * cells.size
     n, dv = v.shape
     inv_hv = 1.0 / hv
     inv_hv2 = inv_hv**2
+    inv_hx2 = 1.0 / (hx**2)
 
     ni = (n + ichunk - 1) // ichunk
     nj = (n + jchunk - 1) // jchunk
@@ -170,12 +329,12 @@ def score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
 
         dx = Ri[:, None] - Rj[None, :]
         dx = (dx + 0.5 * L) % L - 0.5 * L
-        psi = jnp.clip(1.0 - jnp.abs(dx) / eta, 0.0, 1.0)
+        Kx = jnp.exp(-0.5 * (dx * dx) * inv_hx2)  # Gaussian in x (periodic)
 
-        G = Ui @ Uj.T
-        Kj = jnp.exp(G - 0.5 * Ui2 - 0.5 * Uj2)
+        G  = Ui @ Uj.T
+        Kv = jnp.exp(G - 0.5 * Ui2 - 0.5 * Uj2)
 
-        w = (psi * Kj + eps) * mask_j
+        w = (Kx * Kv + eps) * mask_j
         Zi_ = Zi_ + jnp.sum(w, axis=1, keepdims=True)
         Mi_ = Mi_ + w @ Vj
         return Zi_, Mi_, Ri, Ui, Vi, Ui2
@@ -208,22 +367,6 @@ def score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
     M = Mp[:n]
     mu = M / Z
     return (mu - v) * inv_hv2
-
-def sd_score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
-    """
-    Score-debiased KDE score estimator
-    Computes KDE(x,v + hv^2/2 s(x,v))
-    """
-    if hv is None: hv = _silverman_bandwidth(v, eps)
-    s_kde = score_kde(x, v, cells, eta, eps, hv, ichunk, jchunk)
-    v_sd = v + (hv ** 2) / 2 * s_kde
-    return score_kde(x, v_sd, cells, eta, eps, hv, ichunk, jchunk)
-
-def scaled_score_kde(x, v, cells, eta, eta_scale=4, hv_scale=4, output_scale=1.3, **kwargs):
-    "Empirically found scalings for better accuracy"
-    hv=_silverman_bandwidth(v) * hv_scale
-    s_kde = score_kde(x, v, cells, eta*eta_scale, hv=hv, **kwargs) * output_scale
-    return s_kde
 
 #------------------------------------------------------------------------------
 # Landau collision operator
@@ -289,7 +432,7 @@ def collision(x, v, s, eta, gamma, num_cells, box_length, w):
 
 #%%
 #------------------------------------------------------------------------------
-# set up initial data
+# Landau damping initial data
 #------------------------------------------------------------------------------
 seed = 42
 q = 1        # particle charge
@@ -328,16 +471,22 @@ num_steps = int(final_time / dt)
 t = 0.0
 E_L2 = [jnp.sqrt(jnp.sum(E**2) * eta)]
 
-score_method = 'scaled_kde'
+score_method = 'kde_gaussx'  # 'kde', 'scaled_kde', 'sd_kde', 'kde_gaussx'
 if score_method == 'kde':
     score_fn = score_kde
 elif score_method == 'scaled_kde':
     score_fn = scaled_score_kde
+elif score_method == 'sd_kde':
+    score_fn = sd_score_kde
+elif score_method == 'kde_gaussx':
+    score_fn = score_kde_gaussx
 else:
     raise ValueError(f"Unknown score method: {score_method}")
 
 print(f"Landau Damping with n={n:.0e}, M={M}, dt={dt}, eta={eta}, score_method={score_method}")
 #%%
+# for score_fn in [score_kde, scaled_score_kde, sd_score_kde, score_kde_gaussx]:
+score_fn = lambda x, v, cells, eta: score_kde(x, v, cells, eta, hv=jnp.array([4/32, 4/32]))
 s_kde = score_fn(x, v, cells, eta)
 s_true = -v
 
@@ -358,7 +507,7 @@ q2 = plt.quiver(
     scale=5,
     angles='xy',
     scale_units='xy',
-    label=f"KDE score n={n:.1e} mse={float(jnp.mean((s_kde - s_true)**2)):.3f}"
+    label=f"{score_fn.__name__} n={n:.1e} mse={float(jnp.mean((s_kde - s_true)**2)):.3f} nmse={float(jnp.mean((s_kde - s_true)**2) / jnp.mean(s_true**2)):.3f}"
 )
 q2 = plt.quiver(
     v_plot[:, 0],
@@ -447,3 +596,121 @@ plt.savefig(f"data/plots/electric_field_norm/collision_1d_2v/landau_damping_n{n:
 plt.show()
 
 #%%
+#------------------------------------------------------------------------------
+# Two stream instability initial data
+#------------------------------------------------------------------------------
+seed = 42
+q = 1.0
+dv = 2
+alpha = 1/200
+k = 1/5
+c = 2.4
+L = 2 * jnp.pi / k
+n = 10**5
+M = 50
+dt = 0.05
+eta = L / M
+cells = (jnp.arange(M) + 0.5) * eta
+w = q * L / n
+C = 0.08
+gamma = -dv
+
+key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+n_half = n // 2
+
+# Two-stream initial velocities: v1 ~ N(0, I), shifted by +c; v2 = -v1
+v1 = jr.normal(key_v, (n_half, dv))
+v1 -= jnp.mean(v1, axis=0)
+v1 = v1.at[:, 0].add(c)
+v2 = -v1
+v = jnp.vstack([v1, v2])
+
+score_method = "kde"
+if score_method == "kde":
+    score_fn = score_kde
+elif score_method == "scaled_kde":
+    score_fn = scaled_score_kde
+elif score_method == "kde_gaussx":
+    score_fn = score_kde_gaussx
+else:
+    raise ValueError(f"Unknown score method: {score_method}")
+
+def spatial_density(x):
+    return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
+
+# Ideal target in v: symmetric two-stream mixture
+def v_target(vv):
+    return 0.5 * (
+        jax.scipy.stats.norm.pdf(vv, -c, 1.0) +
+        jax.scipy.stats.norm.pdf(vv,  c, 1.0)
+    )
+
+max_value = jnp.max(spatial_density(cells))
+domain = (0.0, float(L))
+x = rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n)
+
+rho = evaluate_charge_density(x, cells, eta, w)
+E = jnp.cumsum(rho - 1) * eta
+E = E - jnp.mean(E)
+
+fig_init = visualize_initial(x, v[:, 0], cells, E, rho, eta, L, v_target)
+plt.show()
+plt.close(fig_init)
+
+final_time = 50.0
+num_steps = int(final_time / dt)
+t = 0.0
+E_L2 = [jnp.sqrt(jnp.sum(E ** 2) * eta)]
+
+# Quiver of scores before time stepping
+s_kde = score_fn(x, v, cells, eta)
+def two_stream_score_v(v, c):
+    # v: (n, dv)
+    v1 = v[:, 0]                      # (n,)
+    r = jnp.tanh(c * v1)              # (n,)
+    mu = jnp.zeros(v.shape[1], v.dtype).at[0].set(c)  # (dv,)
+    return -v + r[:, None] * mu       # (n, dv)
+s_true = two_stream_score_v(v, c)
+for score_fn in [score_kde, scaled_score_kde, sd_score_kde, score_kde_gaussx]:
+    s_kde = score_fn(x, v, cells, eta)
+
+    step_sub = max(1, n // 500)
+    v_plot = v[::step_sub]
+    s_kde_plot = s_kde[::step_sub]
+    s_true_plot = s_true[::step_sub]
+
+    fig_quiver = plt.figure(figsize=(6, 6))
+    plt.quiver(
+        v_plot[:, 0],
+        v_plot[:, 1],
+        s_kde_plot[:, 0],
+        s_kde_plot[:, 1],
+        color="tab:blue",
+        alpha=0.8,
+        scale=5,
+        angles="xy",
+        scale_units="xy",
+        label=f"{score_fn.__name__} n={n:.1e} mse={float(jnp.mean((s_kde - s_true)**2)):.3f} nmse={float(jnp.mean((s_kde - s_true)**2) / jnp.mean(s_true**2)):.3f}",
+    )
+    plt.quiver(
+        v_plot[:, 0],
+        v_plot[:, 1],
+        s_true_plot[:, 0],
+        s_true_plot[:, 1],
+        color="tab:red",
+        alpha=0.5,
+        scale=5,
+        angles="xy",
+        scale_units="xy",
+        label="Reference score (-v)",
+    )
+    plt.scatter(v_plot[:, 0], v_plot[:, 1], s=2, c="k", alpha=0.3, label="v samples")
+    plt.axis("equal")
+    plt.xlabel("v1")
+    plt.ylabel("v2")
+    plt.title("Velocity-space scores: KDE vs reference")
+    plt.legend(loc="best")
+    plt.tight_layout()
+
+    plt.show()
+    plt.close(fig_quiver)
