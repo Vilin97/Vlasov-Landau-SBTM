@@ -6,7 +6,7 @@ MODELS = os.path.join(DATA, 'score_models')
 
 # set higher image quality
 import matplotlib as mpl
-mpl.rcParams['figure.dpi'] = 300
+mpl.rcParams['figure.dpi'] = 400
 
 # set path
 import sys

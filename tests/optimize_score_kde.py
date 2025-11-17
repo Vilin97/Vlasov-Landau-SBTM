@@ -125,8 +125,8 @@ def score_kde_stream(x, v, cells, eta, eps=1e-12, hv=None, jchunk=2048):
     return (mu - v) * inv_hv2
 
 # THIS IS THE BEST VERSION
-# with fp32, n=4e5, M=100, dv=2, takes ~6s and 70Mb memory
-# with fp32, n=1e6, M=100, dv=2, takes ~38s and 120Mb memory
+# on l40s with fp32, n=4e5, M=100, dv=2, takes ~6s and 70Mb memory
+# on l40s with fp32, n=1e6, M=100, dv=2, takes ~38s and 120Mb memory
 @partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
 def score_kde_blocked(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
     L = eta * cells.size

@@ -154,77 +154,135 @@ def _silverman_bandwidth(v, eps=1e-12):
         sigma = jnp.std(v, axis=0, ddof=1) + eps
         return sigma * n ** (-1.0 / (dv + 4.0))  # (dv,)
 
-@partial(jax.jit, static_argnames=['ichunk', 'jchunk'])
-def score_kde(x, v, cells, eta, eps=1e-12, hv=None, ichunk=2048, jchunk=2048):
-    if hv is None: hv = _silverman_bandwidth(v, eps)
-    L = eta * cells.size
+@partial(jax.jit, static_argnames=['max_ppc'])
+def _score_kde_local_impl(x, v, cells, eta, eps=1e-12, hv=None, max_ppc=4096):
+    if x.ndim == 2:
+        x = x[:, 0]
+    if hv is None:
+        hv = _silverman_bandwidth(v, eps)
+
     n, dv = v.shape
+    M = cells.size
+    L = eta * M
     inv_hv = 1.0 / hv
-    inv_hv2 = inv_hv**2
+    inv_hv2 = inv_hv ** 2
 
-    ni = (n + ichunk - 1) // ichunk
-    nj = (n + jchunk - 1) // jchunk
-    n_pad = ni * ichunk
-    pad = n_pad - n
+    idx = jnp.floor(x / eta).astype(jnp.int32) % M
+    order = jnp.argsort(idx)
+    x_s = x[order]
+    v_s = v[order]
+    idx_s = idx[order]
 
-    x_pad = jnp.pad(x, (0, pad))
-    v_pad = jnp.pad(v, ((0, pad), (0, 0)))
-    u_pad = v_pad * inv_hv
+    counts = jnp.bincount(idx_s, length=M)
+    cell_ofs = jnp.cumsum(
+        jnp.concatenate([jnp.array([0], dtype=jnp.int32), counts[:-1]])
+    )
 
-    Zp = jnp.zeros((n_pad, 1), v.dtype)
-    Mp = jnp.zeros((n_pad, dv), v.dtype)
+    Xc = jnp.zeros((M, max_ppc), x.dtype)
+    Vc = jnp.zeros((M, max_ppc, dv), v.dtype)
+    maskc = jnp.zeros((M, max_ppc), x.dtype)
+    idx_map = -jnp.ones((M, max_ppc), jnp.int32)
+    ar_ppc = jnp.arange(max_ppc, dtype=jnp.int32)
 
-    ar_i = jnp.arange(ichunk)
-    ar_j = jnp.arange(jchunk)
+    def fill_cell(c, carry):
+        Xc, Vc, maskc, idx_map = carry
+        cnt = counts[c]
+        base = cell_ofs[c]
+        valid = ar_ppc < cnt
+        gidx = base + ar_ppc
+        gidx = jnp.where(valid, gidx, 0)
+        Xc = Xc.at[c].set(jnp.where(valid, x_s[gidx], 0.0))
+        Vc = Vc.at[c].set(jnp.where(valid[:, None], v_s[gidx], 0.0))
+        maskc = maskc.at[c].set(valid.astype(x.dtype))
+        idx_map = idx_map.at[c].set(jnp.where(valid, gidx, -1))
+        return Xc, Vc, maskc, idx_map
 
-    def loop_j(tj, carry2):
-        Zi_, Mi_, Ri, Ui, Vi, Ui2 = carry2
-        j0 = tj * jchunk
-        mj = jnp.minimum(jchunk, n - j0)
+    Xc, Vc, maskc, idx_map = lax.fori_loop(
+        0, M, fill_cell, (Xc, Vc, maskc, idx_map)
+    )
 
-        Rj = lax.dynamic_slice(x_pad, (j0,), (jchunk,))
-        Uj = lax.dynamic_slice(u_pad, (j0, 0), (jchunk, dv))
-        Vj = lax.dynamic_slice(v_pad, (j0, 0), (jchunk, dv))
-        Uj2 = jnp.sum(Uj * Uj, axis=1, keepdims=True).T
-        mask_j = (ar_j < mj).astype(v.dtype).reshape(1, jchunk)
+    Uc = Vc * inv_hv
+    U2c = jnp.sum(Uc * Uc, axis=-1, keepdims=True)
 
-        dx = Ri[:, None] - Rj[None, :]
+    Zc = jnp.zeros((M, max_ppc, 1), v.dtype)
+    Mc = jnp.zeros((M, max_ppc, dv), v.dtype)
+
+    def body_cell(c, carry):
+        Zc, Mc = carry
+        Xi = Xc[c]                    # (max_ppc,)
+        Vi = Vc[c]                    # (max_ppc,dv)
+        Ui = Uc[c]
+        Ui2 = U2c[c]                  # (max_ppc,1)
+        mask_i = maskc[c][:, None]    # (max_ppc,1)
+
+        c0 = (c - 1) % M
+        c1 = c
+        c2 = (c + 1) % M
+        Xj = jnp.concatenate([Xc[c0], Xc[c1], Xc[c2]], axis=0)        # (3*max_ppc,)
+        Vj = jnp.concatenate([Vc[c0], Vc[c1], Vc[c2]], axis=0)        # (3*max_ppc,dv)
+        Uj = jnp.concatenate([Uc[c0], Uc[c1], Uc[c2]], axis=0)
+        Uj2 = jnp.concatenate([U2c[c0], U2c[c1], U2c[c2]], axis=0)    # (3*max_ppc,1)
+        mask_j = jnp.concatenate(
+            [maskc[c0], maskc[c1], maskc[c2]], axis=0
+        )[:, None]                                                     # (3*max_ppc,1)
+
+        dx = Xi[:, None] - Xj[None, :]
         dx = (dx + 0.5 * L) % L - 0.5 * L
-        psi = jnp.clip(1.0 - jnp.abs(dx) / eta, 0.0, 1.0)
+        psi = jnp.maximum(0.0, 1.0 - jnp.abs(dx) / eta)               # hat in x
 
         G = Ui @ Uj.T
-        Kj = jnp.exp(G - 0.5 * Ui2 - 0.5 * Uj2)
+        K = jnp.exp(G - 0.5 * Ui2 - 0.5 * Uj2.T)
 
-        w = (psi * Kj + eps) * mask_j
-        Zi_ = Zi_ + jnp.sum(w, axis=1, keepdims=True)
-        Mi_ = Mi_ + w @ Vj
-        return Zi_, Mi_, Ri, Ui, Vi, Ui2
+        mask = mask_i * mask_j.T
+        w = (psi * K + eps) * mask
 
-    def loop_i(ti, carry):
-        Zc, Mc = carry
-        i0 = ti * ichunk
-        mi = jnp.minimum(ichunk, n - i0)
+        Z_local = jnp.sum(w, axis=1, keepdims=True) * mask_i
+        M_local = (w @ Vj) * mask_i
 
-        Ri = lax.dynamic_slice(x_pad, (i0,), (ichunk,))
-        Ui = lax.dynamic_slice(u_pad, (i0, 0), (ichunk, dv))
-        Vi = lax.dynamic_slice(v_pad, (i0, 0), (ichunk, dv))
-        Ui2 = jnp.sum(Ui * Ui, axis=1, keepdims=True)
-
-        Zi = jnp.zeros((ichunk, 1), v.dtype)
-        Mi = jnp.zeros((ichunk, dv), v.dtype)
-
-        Zi, Mi, *_ = lax.fori_loop(0, nj, loop_j, (Zi, Mi, Ri, Ui, Vi, Ui2))
-
-        mask_i = (ar_i < mi).astype(v.dtype).reshape(ichunk, 1)
-        Zi = Zi * mask_i
-        Mi = Mi * mask_i
-
-        Zc = lax.dynamic_update_slice(Zc, Zi, (i0, 0))
-        Mc = lax.dynamic_update_slice(Mc, Mi, (i0, 0))
+        Zc = Zc.at[c].set(Z_local)
+        Mc = Mc.at[c].set(M_local)
         return Zc, Mc
 
-    Zp, Mp = lax.fori_loop(0, ni, loop_i, (Zp, Mp))
-    Z = Zp[:n]
-    M = Mp[:n]
-    mu = M / Z
+    Zc, Mc = lax.fori_loop(0, M, body_cell, (Zc, Mc))
+
+    idx_flat = idx_map.reshape(-1)
+    Z_flat = Zc.reshape(-1, 1)
+    M_flat = Mc.reshape(-1, dv)
+    valid = idx_flat >= 0
+    idx_valid = jnp.where(valid, idx_flat, 0)
+    Z_contrib = Z_flat * valid[:, None]
+    M_contrib = M_flat * valid[:, None]
+
+    Zs = jnp.zeros((n, 1), v.dtype)
+    Ms = jnp.zeros((n, dv), v.dtype)
+    Zs = Zs.at[idx_valid].add(Z_contrib)
+    Ms = Ms.at[idx_valid].add(M_contrib)
+
+    inv_order = jnp.empty_like(order)
+    inv_order = inv_order.at[order].set(jnp.arange(n))
+
+    Z = Zs[inv_order]
+    M = Ms[inv_order]
+    
+    Z_safe = jnp.where(Z > 0, Z, eps)
+    mu = M / Z_safe
+    jax.debug.print("max_ppc={max_ppc}, max_count={mc}", max_ppc=max_ppc, mc=jnp.max(counts))
     return (mu - v) * inv_hv2
+
+# this is ~11 times faster than score_kde_blocked with n=1e5 and M=50
+def score_kde(x, v, cells, eta, eps=1e-12, hv=None):
+    if hv is None:
+        hv = _silverman_bandwidth(v, eps)
+
+    if x.ndim == 2:
+        x1d = x[:, 0]
+    else:
+        x1d = x
+    M = cells.size
+    idx = jnp.floor(x1d / eta).astype(jnp.int32) % M
+    counts = jnp.bincount(idx, length=M)
+    max_count = int(jax.device_get(jnp.max(counts)))
+    m = max(1, max_count)
+    max_ppc = ((m + 99) // 100) * 100  # next multiple of 100 >= m
+
+    return _score_kde_local_impl(x, v, cells, eta, eps, hv, max_ppc)
