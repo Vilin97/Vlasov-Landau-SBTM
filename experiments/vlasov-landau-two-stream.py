@@ -190,6 +190,8 @@ def main():
     )
     
     wandb.log({"phase_space_snapshots": wandb.Image(fig_ps)}, step=num_steps + 1)
+    os.makedirs(outdir_ps, exist_ok=True)
+    fig_ps.savefig(path_ps)
     plt.show()
     plt.close(fig_ps)
 
@@ -203,13 +205,16 @@ def main():
         n=n, M=M, dt=dt, dv=dv, C=C,
         alpha=alpha, k=k, c=c, score_method=score_method,
     )
+    snapshots_dir = os.path.join(path.DATA, "snapshots", f"two_stream_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}_c{c}")
+    os.makedirs(snapshots_dir, exist_ok=True)
+    snapshots_raw_path = os.path.join(snapshots_dir, "snapshots_raw.npz")
     np.savez_compressed(
-        "snapshots_raw.npz",
+        snapshots_raw_path,
         x_traj=np.array(x_traj, dtype=object),
         v_traj=np.array(v_traj, dtype=object),
         t_traj=np.array(t_traj),
     )
-    snap_art.add_file("snapshots_raw.npz")
+    snap_art.add_file(snapshots_raw_path)
     wandb.log_artifact(snap_art)
 
     # Post-processing: two-stream growth fit
@@ -246,11 +251,11 @@ def main():
     outdir = f"data/plots/electric_field_norm/two_stream_1d_{dv}v/"
     os.makedirs(outdir, exist_ok=True)
     fname = f"two_stream_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}_c{c}.png"
-    path = os.path.join(outdir, fname)
-    plt.savefig(path)
+    p = os.path.join(outdir, fname)
+    plt.savefig(p)
 
     wandb.log({"two_stream_growth": wandb.Image(fig_final)}, step=num_steps + 2)
-    wandb.save(path)
+    wandb.save(p)
 
     plt.show()
     plt.close(fig_final)

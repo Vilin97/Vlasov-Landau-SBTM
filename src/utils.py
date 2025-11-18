@@ -6,6 +6,7 @@ from functools import partial
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import math
 
 # ------------------------------------------------------------------------------
 # Visualization utilities
@@ -85,10 +86,13 @@ def visualize_initial(x, v, cells, E, rho, eta, L, spatial_density, v_target):
     plt.tight_layout()
     return fig
 
-def plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, outdir, fname, bins=[150,150]):
+def plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, outdir, fname, bins=None):
     num_snaps = len(x_traj)
     if num_snaps == 0:
         return None, None
+    if bins is None:
+        k = int(math.sqrt(x_traj[0].shape[0] / 50))
+        bins = [max(20, k), max(20, k)]
 
     cols = min(3, num_snaps)
     rows = int(np.ceil(num_snaps / cols))

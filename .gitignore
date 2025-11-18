@@ -3,3 +3,5 @@ Vlasov_Landau_SBTM.egg-info
 *.png
 data/
 .DS_Store
+*.npz
+logs/
