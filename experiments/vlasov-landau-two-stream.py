@@ -190,8 +190,6 @@ def main():
     )
     
     wandb.log({"phase_space_snapshots": wandb.Image(fig_ps)}, step=num_steps + 1)
-    os.makedirs(outdir_ps, exist_ok=True)
-    fig_ps.savefig(path_ps)
     plt.show()
     plt.close(fig_ps)
 
@@ -239,7 +237,6 @@ def main():
             "r--",
             label=fr"$e^{{\beta t}},\ \beta = {beta_ref:.4f}$",
         )
-        wandb.log({"beta_ref": beta_ref})
 
     plt.xlabel("Time")
     plt.ylabel(r"$||E||_{L^2}$")
