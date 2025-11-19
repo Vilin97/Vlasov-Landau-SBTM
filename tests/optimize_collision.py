@@ -567,3 +567,6 @@ cost(collision_rolling, x, v, s, eta, gamma, box_length, L / n, window_size=wind
 
 bench(collision_6, x, v, s, eta, gamma, box_length, L / n, name="collision_6")
 cost(collision_6, x, v, s, eta, gamma, box_length, L / n, num_batches=1000, name="collision_6")
+
+#%%
+# TODO: try computing the collision operator in fp32 and converting to fp64. what's the error and speedup?

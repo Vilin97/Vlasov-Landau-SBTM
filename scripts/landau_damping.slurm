@@ -1,17 +1,20 @@
 #!/bin/bash
-#SBATCH --job-name=landau_damping
+#SBATCH --job-name=landau_damping_sbtm
 #SBATCH --account=amath
 #SBATCH --partition=gpu-rtx6k
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10G
-#SBATCH --time=96:00:00
+#SBATCH --time=24:00:00
 #SBATCH --array=0-3
 #SBATCH --output=logs/%x_%N_%A_%a.out   # A=array job ID, a=array index
 
-# Possible C values
-C_VALUES=(0 0.01 0.1 1.0)
-C=${C_VALUES[$SLURM_ARRAY_TASK_ID]}
+# C_VALUES=(0 0.01 0.1 1.0)
+# C=${C_VALUES[$SLURM_ARRAY_TASK_ID]}
+
+# sbtm_num_batch_steps values
+SBTM_STEPS_VALUES=(0 10 100 1000)
+SBTM_STEPS=${SBTM_STEPS_VALUES[$SLURM_ARRAY_TASK_ID]}
 
 source /gscratch/amath/vilin/conda/etc/profile.d/conda.sh
 conda activate vlsbtm
@@ -23,9 +26,10 @@ srun python3 experiments/vlasov-landau-damping.py \
   --gpu 0 \
   --dv 2 \
   --final_time 15.0 \
-  --C $C \
+  --C 0.1 \
   --alpha 0.1 \
-  --score_method kde \
+  --score_method sbtm \
+  --sbtm_num_batch_steps ${SBTM_STEPS} \
   --wandb_project vlasov_landau_damping \
-  --wandb_run_name "n1e6_M100_dt0.02_C${C}_kde" \
+  --wandb_run_name "n1e6_M100_dt0.02_C0.1_sbtm_steps${SBTM_STEPS}" \
   --wandb_mode online

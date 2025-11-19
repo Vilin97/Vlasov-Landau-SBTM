@@ -1,5 +1,6 @@
 # Self-contained Vlasov–Landau solver with CLI + wandb logging
-# Run with `python experiments/vlasov-landau-damping.py --n 1000_000 --M 100 --dt 0.02 --gpu 0 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method scaled_kde --wandb_run_name "n1e6_M100_dt0.02_C0.05_scaled_kde"`
+# Example:
+# python experiments/vlasov-landau-damping.py --n 1000_000 --M 100 --dt 0.02 --gpu 0 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method sbtm --wandb_run_name "n1e6_M100_dt0.02_C0.05_sbtm"
 
 import argparse
 import os
@@ -13,7 +14,11 @@ import matplotlib.pyplot as plt
 import wandb
 import numpy as np
 from scipy.signal import argrelextrema
-from src import path, utils
+
+from flax import nnx
+import optax
+
+from src import path, utils, score_model
 
 #------------------------------------------------------------------------------
 # Main
@@ -27,9 +32,21 @@ def parse_args():
     p.add_argument("--fp32", action="store_true", help="Use float32 instead of float64")
     p.add_argument("--dv", type=int, default=2, help="Velocity dimension")
     p.add_argument("--final_time", type=float, default=15.0, help="Final simulation time")
-    p.add_argument("--C", type=float, default=0.05, help="Collision strength")
+    p.add_argument("--C", type=float, default=0.1, help="Collision strength")
     p.add_argument("--alpha", type=float, default=0.1, help="Amplitude of initial density perturbation")
-    p.add_argument("--score_method", type=str, default="kde", choices=["kde", "scaled_kde"])
+    p.add_argument(
+        "--score_method",
+        type=str,
+        default="kde",
+        choices=["kde", "scaled_kde", "sbtm"],
+    )
+
+    # sbtm-specific args (used only if score_method == "sbtm")
+    p.add_argument("--sbtm_batch_size", type=int, default=20_000)
+    p.add_argument("--sbtm_num_epochs", type=int, default=10_000)
+    p.add_argument("--sbtm_abs_tol", type=float, default=1e-4)
+    p.add_argument("--sbtm_lr", type=float, default=2e-4)
+    p.add_argument("--sbtm_num_batch_steps", type=int, default=10)
 
     p.add_argument("--wandb_project", type=str, default="vlasov_landau_damping", help="wandb project name")
     p.add_argument("--wandb_run_name", type=str, default="landau_damping", help="wandb run name")
@@ -67,18 +84,11 @@ def main():
     w = q * L / n
     C = args.C
     gamma = -dv
+    dx = 1  # 1D in x
 
     key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
     v = jr.normal(key_v, (n, dv))
     v = v - jnp.mean(v, axis=0)
-
-    score_method = args.score_method
-    if score_method == "kde":
-        score_fn = utils.score_kde
-    elif score_method == "scaled_kde":
-        score_fn = utils.scaled_score_kde
-    else:
-        raise ValueError(f"Unknown score method: {score_method}")
 
     print(f"Args: {args}")
 
@@ -90,6 +100,44 @@ def main():
     max_value = jnp.max(spatial_density(cells))
     domain = (0.0, float(L))
     x = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n)
+
+    # choose score method / sbtm setup
+    score_method = args.score_method
+    model = None
+    optimizer = None
+    training_config = None
+
+    if score_method == "kde":
+        score_fn = utils.score_kde
+    elif score_method == "scaled_kde":
+        score_fn = utils.scaled_score_kde
+    elif score_method == "sbtm":
+        hidden_dims = (256, 256)
+        training_config = {
+            "batch_size": args.sbtm_batch_size,
+            "num_epochs": args.sbtm_num_epochs,
+            "abs_tol": args.sbtm_abs_tol,
+            "lr": args.sbtm_lr,
+            "num_batch_steps": args.sbtm_num_batch_steps,
+        }
+        model = score_model.MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
+        example_name = "landau_damping"
+        model_path = os.path.join(
+            path.MODELS,
+            f"{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
+        )
+        if os.path.exists(model_path):
+            model.load(model_path)
+        else:
+            utils.train_initial_model(model, x, v, -v, batch_size=training_config["batch_size"], num_epochs=training_config["num_epochs"], abs_tol=training_config["abs_tol"], lr=training_config["lr"], verbose=True)
+            model.save(model_path)
+            time.sleep(1)
+        optimizer = nnx.Optimizer(model, optax.adamw(training_config["lr"]))
+
+        def score_fn(x_in, v_in, cells_in, eta_in):
+            return model(x_in, v_in)
+    else:
+        raise ValueError(f"Unknown score method: {score_method}")
 
     rho = utils.evaluate_charge_density(x, cells, eta, w)
     E = jnp.cumsum(rho - 1) * eta
@@ -107,15 +155,17 @@ def main():
 
     print(
         f"Landau Damping with n={n:.0e}, M={M}, dt={dt}, eta={float(eta):.4f}, "
-        f"score_method={args.score_method}, dv={dv}, C={C}, alpha={alpha}, gpu={args.gpu}, fp32={args.fp32}"
+        f"score_method={score_method}, dv={dv}, C={C}, alpha={alpha}, gpu={args.gpu}, fp32={args.fp32}"
     )
 
     # Quiver of scores before time stepping
-    s_kde = score_fn(x, v, cells, eta)
+    if score_method == "sbtm":
+        s_plot = model(x, v)
+    else:
+        s_plot = score_fn(x, v, cells, eta)
     s_true = -v
 
-    fig_quiver = utils.plot_score_quiver(v, s_kde, s_true, label=score_method)
-
+    fig_quiver = utils.plot_score_quiver(v, s_plot, s_true, label=score_method)
     wandb.log({"score_quiver": wandb.Image(fig_quiver)}, step=0)
     plt.show()
     plt.close(fig_quiver)
@@ -126,7 +176,7 @@ def main():
 
     x_traj, v_traj, t_traj = [], [], []
     start_time = time.perf_counter()
-    for istep in tqdm(range(num_steps+1)):
+    for istep in tqdm(range(num_steps + 1)):
         if istep in snapshot_steps:
             x_host = np.asarray(x.block_until_ready())
             v_host = np.asarray(v.block_until_ready())
@@ -136,9 +186,22 @@ def main():
 
         x, v, E = utils.vlasov_step(x, v, E, cells, eta, dt, L, w)
 
-        if C>0:
-            s = score_fn(x, v, cells, eta)
-            Q = utils.collision(x, v, s, eta, gamma, n, L, w)
+        if C > 0:
+            if score_method == "sbtm":
+                s = model(x, v)
+                key = jr.PRNGKey(istep)
+                utils.train_score_model(
+                    model,
+                    optimizer,
+                    x,
+                    v,
+                    key,
+                    batch_size=training_config["batch_size"],
+                    num_batch_steps=training_config["num_batch_steps"],
+                )
+            else:
+                s = score_fn(x, v, cells, eta)
+            Q = utils.collision(x, v, s, eta, gamma, L, w)
             v = v - dt * C * Q
 
         E = E - jnp.mean(E)
@@ -146,7 +209,6 @@ def main():
         E_norm = jnp.sqrt(jnp.sum(E ** 2) * eta)
         E_L2.append(E_norm)
 
-        # logging
         if (istep + 1) % args.log_every == 0:
             elapsed = time.perf_counter() - start_time
             steps_per_sec = (istep + 1) / elapsed if elapsed > 0 else 0.0
@@ -160,30 +222,39 @@ def main():
                 step=istep + 1,
             )
 
-    # Phase-space snapshots from x_traj, v_traj
+    # Phase-space snapshots
     title = fr"Landau damping α={alpha}, k={k}, C={C}, n={n:.0e}, M={M}, Δt={dt}, {score_method}"
     outdir_ps = f"data/plots/phase_space/landau_damping_1d_{dv}v/"
     fname_ps = f"landau_damping_phase_space_n{n:.0e}_M{M}_dt{dt}_dv{dv}_C{C}_alpha{alpha}_k{k}.png"
-    
+
     fig_ps, path_ps = utils.plot_phase_space_snapshots(
         x_traj, v_traj, t_traj, L, title, outdir_ps, fname_ps
     )
-    
+
     wandb.log({"phase_space_snapshots": wandb.Image(fig_ps)}, step=num_steps + 1)
     plt.show()
     plt.close(fig_ps)
 
-    # log snapshots
     snap_art = wandb.Artifact(
         name="landau_damping_snapshots",
-        type="snapshot_data"
+        type="snapshot_data",
     )
     snap_art.add_file(os.path.join(outdir_ps, fname_ps))
     snap_art.metadata = dict(
-        n=n, M=M, dt=dt, dv=dv, C=C,
-        alpha=alpha, k=k, score_method=score_method,
+        n=n,
+        M=M,
+        dt=dt,
+        dv=dv,
+        C=C,
+        alpha=alpha,
+        k=k,
+        score_method=score_method,
     )
-    snapshots_dir = os.path.join(path.DATA, "snapshots", f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}")
+    snapshots_dir = os.path.join(
+        path.DATA,
+        "snapshots",
+        f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}",
+    )
     os.makedirs(snapshots_dir, exist_ok=True)
     snapshots_raw_path = os.path.join(snapshots_dir, "snapshots_raw.npz")
     np.savez_compressed(
@@ -201,10 +272,17 @@ def main():
     fig_final = plt.figure(figsize=(6, 4))
     plt.plot(t_grid, E_L2, marker="o", ms=1, label=f"Simulation (C={C})")
 
-    prefactor = -1 / (k ** 3) * jnp.sqrt(jnp.pi / 8) * jnp.exp(-1 / (2 * k ** 2) - 1.5)
+    prefactor = -1 / (k ** 3) * jnp.sqrt(jnp.pi / 8) * jnp.exp(
+        -1 / (2 * k**2) - 1.5
+    )
     pred = jnp.exp(t_grid * prefactor)
     pred *= E_L2[0] / pred[0]
-    plt.plot(t_grid, pred, "k-.", label=fr"collisionless: $e^{{\beta t}}, \beta={float(prefactor):.3f}$")
+    plt.plot(
+        t_grid,
+        pred,
+        "k-.",
+        label=fr"collisionless: $e^{{\beta t}}, \beta={float(prefactor):.3f}$",
+    )
 
     prefactor_collisional = prefactor - C * jnp.sqrt(2 / (9 * jnp.pi))
     predicted_collisional = jnp.exp(t_grid * prefactor_collisional)
@@ -228,7 +306,12 @@ def main():
     if len(mt) > 1:
         coeffs = np.polyfit(mt, np.log(mv), 1)
         fit = np.exp(coeffs[1] + coeffs[0] * t_mask)
-        plt.plot(t_mask, fit, "g--", label=fr"fitted: $e^{{\beta t}}, \beta={coeffs[0]:.3f}$")
+        plt.plot(
+            t_mask,
+            fit,
+            "g--",
+            label=fr"fitted: $e^{{\beta t}}, \beta={coeffs[0]:.3f}$",
+        )
         wandb.log({"beta_fit": coeffs[0]})
 
     plt.xlabel("Time")
@@ -241,11 +324,13 @@ def main():
 
     outdir = f"data/plots/electric_field_norm/collision_1d_{dv}v/"
     os.makedirs(outdir, exist_ok=True)
-    fname = f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_{score_method}.png"
+    fname = (
+        f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_{score_method}.png"
+    )
     p = os.path.join(outdir, fname)
     plt.savefig(p)
 
-    wandb.log({"landau_damping": wandb.Image(fig_final)}, step=num_steps+2)
+    wandb.log({"landau_damping": wandb.Image(fig_final)}, step=num_steps + 2)
     wandb.save(p)
     plt.show()
     plt.close(fig_final)

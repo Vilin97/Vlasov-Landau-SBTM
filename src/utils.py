@@ -8,6 +8,10 @@ import numpy as np
 import os
 import math
 
+from src import loss
+from flax import nnx
+import optax
+
 # ------------------------------------------------------------------------------
 # Visualization utilities
 # ------------------------------------------------------------------------------
@@ -485,3 +489,69 @@ def collision(x, v, s, eta, gamma, box_length, w):
     
     # 2. Call the JIT-compiled kernel
     return collision_rolling(x, v, s, eta, gamma, box_length, w, window_size=win_size)
+
+#------------------------------------------------------------------------------
+# SBTM helpers
+#------------------------------------------------------------------------------
+def mse_loss(model, batch):
+    x, v, s = batch
+    pred = model(x, v)
+    return loss.mse(pred, s)
+
+def ism_loss(model, batch, key):
+    x, v = batch
+    return loss.implicit_score_matching_loss(model, x, v, key=key)
+
+@nnx.jit
+def supervised_step(model, optimizer, batch):
+    loss_val, grads = nnx.value_and_grad(mse_loss)(model, batch)
+    optimizer.update(grads)
+    return loss_val
+
+@nnx.jit
+def score_step(model, optimizer, batch, key):
+    loss_val, grads = nnx.value_and_grad(ism_loss)(model, batch, key)
+    optimizer.update(grads)
+    return loss_val
+
+def train_initial_model(model, x, v, score, batch_size, num_epochs, abs_tol, lr, verbose=False):
+    optimizer = nnx.Optimizer(model, optax.adamw(lr))
+    n = x.shape[0]
+    for epoch in range(num_epochs):
+        full_loss = mse_loss(model, (x, v, score))
+        if verbose:
+            print(f"Epoch {epoch}: loss = {full_loss:.5f}")
+        if full_loss < abs_tol:
+            if verbose:
+                print(f"Stopping at epoch {epoch} with loss {full_loss:.5f} < {abs_tol}")
+            break
+        key = jr.PRNGKey(epoch)
+        perm = jr.permutation(key, n)
+        x_sh, v_sh, s_sh = x[perm], v[perm], score[perm]
+        for i in range(0, n, batch_size):
+            batch = (
+                x_sh[i:i+batch_size],
+                v_sh[i:i+batch_size],
+                s_sh[i:i+batch_size],
+            )
+            supervised_step(model, optimizer, batch)
+
+def train_score_model(model, optimizer, x, v, key, batch_size, num_batch_steps):
+    n = x.shape[0]
+    losses = []
+    batch_count = 0
+    while batch_count < num_batch_steps:
+        key, subkey = jr.split(key)
+        perm = jr.permutation(subkey, n)
+        x = x[perm]
+        v = v[perm]
+        start = 0
+        while start < n and batch_count < num_batch_steps:
+            end = min(start + batch_size, n)
+            batch = (x[start:end], v[start:end])
+            key, subkey = jr.split(key)
+            loss_val = score_step(model, optimizer, batch, subkey)
+            losses.append(loss_val)
+            start = end
+            batch_count += 1
+    return losses
