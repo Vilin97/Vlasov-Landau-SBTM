@@ -69,6 +69,8 @@ class MLPScoreModel(nnx.Module):
             matching the batch dimensions of the inputs
         """
         # Concatenate x and v along the last dimension
+        if x.ndim < v.ndim:
+            x = x[:, None]
         inputs = jnp.concatenate([x, v], axis=-1)
         
         # Pass through MLP layers
@@ -128,6 +130,8 @@ class ResNetScoreModel(nnx.Module):
             matching the batch dimensions of the inputs
         """
         # Concatenate x and v along the last dimension
+        if x.ndim < v.ndim:
+            x = x[:, None]
         inputs = jnp.concatenate([x, v], axis=-1)
         
         # Apply ResNet layers with skip connections

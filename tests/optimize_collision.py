@@ -417,6 +417,93 @@ def collision_5(x, v, s, eta, gamma, box_length, w):
     
     # 2. Call the JIT-compiled kernel
     return collision_rolling(x, v, s, eta, gamma, box_length, w, window_size=win_size)
+
+@partial(jax.jit, static_argnames=['num_batches', 'spatial_sort'])
+def collision_6(x, v, s, eta, gamma, box_length, w, key=jr.PRNGKey(1), num_batches=10, spatial_sort=False):
+    """
+    Random Batch Method (RBM) Implementation.
+    
+    Args:
+        batch_size: Size of the random batches (P in the text).
+        spatial_sort: If True, sorts particles before batching. 
+                      Recommended for local kernels (psi_eta) to reduce variance.
+    """
+    if x.ndim == 2: x = x[:, 0]
+    N, d = v.shape
+    
+    # --- 1. Shuffle / Sort ---
+    # The text says "assign them randomly to R batches".
+    if spatial_sort:
+        # OPTION A: Local RBM (Sorts spatially first)
+        # High accuracy for local kernels, biases towards nearest neighbors
+        perm = jnp.argsort(x)
+    else:
+        # OPTION B: Global RBM (True Random)
+        # Matches the image text exactly. Unbiased but high variance for local kernels.
+        perm = jax.random.permutation(key, N)
+
+    x_shuffled = x[perm]
+    v_shuffled = v[perm]
+    s_shuffled = s[perm]
+
+    # --- 2. Batching ---
+    # We reshape to (Num_Batches, Batch_Size, d)
+    # Note: We truncate N to be divisible by batch_size for speed.
+    # In a production sim, you'd handle the remainder, but for N=10^6 it's negligible.
+    batch_size = N // num_batches
+    limit = num_batches * batch_size
+    
+    x_batches = x_shuffled[:limit].reshape(num_batches, batch_size, 1)
+    v_batches = v_shuffled[:limit].reshape(num_batches, batch_size, d)
+    s_batches = s_shuffled[:limit].reshape(num_batches, batch_size, d)
+
+    # --- 3. Dense Interaction within Batches ---
+    def compute_batch(xb, vb, sb):
+        # xb shape: (Batch_Size, 1)
+        # Broadcast to (Batch_Size, Batch_Size)
+        
+        # Distances
+        dx = xb - xb.T
+        dx = (dx + box_length / 2) % box_length - box_length / 2
+        dist = jnp.abs(dx)
+        
+        # Kernel & Mask
+        # Note: We assume interactions within the batch.
+        mask = (dist <= eta) & (dist > 0.0)
+        
+        psi = jnp.maximum(0.0, 1.0 - dist / eta) / eta
+        psi = psi * mask
+        
+        # Physics
+        dv = vb[:, None, :] - vb[None, :, :]
+        ds = sb[:, None, :] - sb[None, :, :]
+        
+        interaction = A_apply_new(dv, ds, gamma) # (B, B, d)
+        
+        # Sum over neighbors (axis 1)
+        return jnp.sum(interaction * psi[:, :, None], axis=1)
+
+    # Vectorize over the 'num_batches' dimension
+    Q_batches = jax.vmap(compute_batch)(x_batches, v_batches, s_batches)
+    
+    # Flatten back to (limit, d)
+    Q_flat = Q_batches.reshape(limit, d)
+    
+    # Pad back to N if we truncated
+    if limit < N:
+        pad = jnp.zeros((N - limit, d))
+        Q_flat = jnp.concatenate([Q_flat, pad], axis=0)
+
+    # --- 4. Scaling (The Formula from Image) ---
+    # Formula: R * (N - 1) / (N - R)
+    # R = num_batches
+    scaling_factor = (num_batches * (N - 1)) / (N - num_batches)
+    Q_flat = Q_flat * scaling_factor
+
+    # --- 5. Unshuffle ---
+    # We need to scatter the forces back to the original particle indices
+    rev = jnp.empty_like(perm).at[perm].set(jnp.arange(N))
+    return w * Q_flat[rev]
 #%%
 # prepare data
 seed = 42
@@ -424,17 +511,16 @@ dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 k = 0.5
 L = 2 * jnp.pi / k   # ~12.566
-n = 10**6    # number of particles
+n = 10**4    # number of particles
 M = 100      # number of cells
 eta = L / M  # cell size
 cells = (jnp.arange(M) + 0.5) * eta
 
-key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
+key_x, key_v, key_s = jr.split(jr.PRNGKey(seed), 3)
 v = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
-v = v - jnp.mean(v, axis=0)
+v = v * 0.1
 x = jr.uniform(key_x, shape=(n,1)) * L
-s = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
-
+s = jr.multivariate_normal(key_s, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
 C = 1.0
 gamma = -dv
 box_length = L
@@ -447,15 +533,20 @@ result_collision_2 = collision_2(x, v, s, eta, C, gamma, box_length, num_cells)
 result_collision_3 = collision_3(x, v, s, eta, gamma, num_cells, box_length, L / n)
 result_collision_4 = collision_4(x, v, s, eta, gamma, box_length, L / n)
 result_collision_5 = collision_5(x, v, s, eta, gamma, box_length, L / n)
+result_collision_6 = collision_6(x, v, s, eta, gamma, box_length, L / n, num_batches=1)
+result_collision_7 = collision_6(x, v, s, eta, gamma, box_length, L / n, num_batches=5)
 abs_diff_2 = jnp.abs(result_collision - result_collision_2)
 abs_diff_3 = jnp.abs(result_collision - result_collision_3)
 abs_diff_4 = jnp.abs(result_collision - result_collision_4)
 abs_diff_5 = jnp.abs(result_collision - result_collision_5)
+abs_diff_6 = jnp.abs(result_collision - result_collision_6)
+avg_diff_7 = jnp.mean(jnp.abs(result_collision - result_collision_7)**2)**0.5
 print(f"Max abs diff collision vs collision_2: {jnp.max(abs_diff_2):.6e}")
 print(f"Max abs diff collision vs collision_3: {jnp.max(abs_diff_3):.6e}")
 print(f"Max abs diff collision vs collision_4: {jnp.max(abs_diff_4):.6e}")
 print(f"Max abs diff collision vs collision_5: {jnp.max(abs_diff_5):.6e}")
-
+print(f"Max abs diff collision vs collision_6: {jnp.max(abs_diff_6):.6e}")
+print(f"Mean abs diff collision vs collision_7: {avg_diff_7:.6e}")
 #%%
 print(f"Number of particles: {n:.0e}, Number of cells: {num_cells}, eta: {eta:.4f}, box_length: {box_length:.4f}")
 # benchmark runtime and memory
@@ -473,3 +564,6 @@ cost(collision_3, x, v, s, eta, gamma, num_cells, box_length, L / n, name="colli
 bench(collision_5, x, v, s, eta, gamma, box_length, L / n, name="collision_5")
 window_size = compute_window_params(v.shape[0], eta, box_length, bucket_size=100, safety_factor=1.2)
 cost(collision_rolling, x, v, s, eta, gamma, box_length, L / n, window_size=window_size, name="collision_5")
+
+bench(collision_6, x, v, s, eta, gamma, box_length, L / n, name="collision_6")
+cost(collision_6, x, v, s, eta, gamma, box_length, L / n, num_batches=1000, name="collision_6")

@@ -125,6 +125,8 @@ def implicit_score_matching_loss(s, x_batch, v_batch, key, div_mode='approximate
     One PRNG key → one ε-tensor shared across the batch (still unbiased).
     """
     assert div_mode == 'approximate_rademacher', "Only 'approximate_rademacher' divergence mode is currently implemented"
+    if x_batch.ndim < v_batch.ndim:
+        x_batch = x_batch[:, None]
     # ε tensor:  (n_samples, B, dv)
     eps = jax.random.rademacher(key, (n_samples,) + v_batch.shape, dtype=v_batch.dtype)
 
