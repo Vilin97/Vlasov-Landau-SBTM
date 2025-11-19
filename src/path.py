@@ -1,5 +1,6 @@
 import os
-ROOT = os.path.expanduser('~/Vlasov-Landau-SBTM/')
+# ROOT = os.path.expanduser('~/Vlasov-Landau-SBTM/') # on americano
+ROOT = os.path.expanduser('/gscratch/amath/vilin/Vlasov-Landau-SBTM/') # on Hyak
 DATA = os.path.join(ROOT, 'data')
 PLOTS = os.path.join(DATA, 'plots')
 MODELS = os.path.join(DATA, 'score_models')
