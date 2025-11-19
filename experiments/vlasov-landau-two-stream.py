@@ -13,16 +13,21 @@ import matplotlib.pyplot as plt
 import wandb
 import numpy as np
 
-from src import path, utils
+from flax import nnx
+import optax
+
+from src import path, utils, score_model
+
 
 def init_two_stream_velocities(key_v, n, dv, c):
-        assert n % 2 == 0, "n must be even"
-        n_half = n // 2
-        v1 = jr.normal(key_v, (n_half, dv))
-        v1 -= jnp.mean(v1, axis=0)
-        v1 = v1.at[:, 0].add(c)
-        v2 = -v1
-        return jnp.vstack([v1, v2])
+    assert n % 2 == 0, "n must be even"
+    n_half = n // 2
+    v1 = jr.normal(key_v, (n_half, dv))
+    v1 -= jnp.mean(v1, axis=0)
+    v1 = v1.at[:, 0].add(c)
+    v2 = -v1
+    return jnp.vstack([v1, v2])
+
 
 #------------------------------------------------------------------------------
 # Main
@@ -40,7 +45,14 @@ def parse_args():
     p.add_argument("--alpha", type=float, default=1/200, help="Amplitude of initial density perturbation")
     p.add_argument("--k", type=float, default=1/5, help="Wave number k")
     p.add_argument("--c", type=float, default=2.4, help="Beam speed for two-stream")
-    p.add_argument("--score_method", type=str, default="scaled_kde", choices=["kde", "scaled_kde"])
+    p.add_argument("--score_method", type=str, default="scaled_kde", choices=["kde", "scaled_kde", "sbtm"])
+
+    # sbtm-specific args
+    p.add_argument("--sbtm_batch_size", type=int, default=20_000)
+    p.add_argument("--sbtm_num_epochs", type=int, default=10_000)
+    p.add_argument("--sbtm_abs_tol", type=float, default=1e-4)
+    p.add_argument("--sbtm_lr", type=float, default=2e-4)
+    p.add_argument("--sbtm_num_batch_steps", type=int, default=10)
 
     p.add_argument("--wandb_project", type=str, default="vlasov_landau_two_stream", help="wandb project name")
     p.add_argument("--wandb_run_name", type=str, default="two_stream", help="wandb run name")
@@ -51,7 +63,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-
     assert args.n % 2 == 0, "--n must be even for two-stream initialization"
 
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -65,7 +76,6 @@ def main():
         config=vars(args),
     )
 
-    # Parameters
     seed = 42
     q = 1.0
     dv = args.dv
@@ -81,39 +91,82 @@ def main():
     w = q * L / n
     C = args.C
     gamma = -dv
+    dx = 1
 
     key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
-    
     v = init_two_stream_velocities(key_v, n, dv, c)
 
+    def spatial_density(x):
+        return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
+    max_value = jnp.max(spatial_density(cells))
+    domain = (0.0, float(L))
+    x = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n)
+
     score_method = args.score_method
+    model = None
+    optimizer = None
+    training_config = None
+
+    def two_stream_score_v(v_in, c_in):
+        v1 = v_in[:, 0]
+        r = jnp.tanh(c_in * v1)
+        mu = jnp.zeros(v_in.shape[1], v_in.dtype).at[0].set(c_in)
+        return -v_in + r[:, None] * mu
+
     if score_method == "kde":
         score_fn = utils.score_kde
     elif score_method == "scaled_kde":
         score_fn = utils.scaled_score_kde
+    elif score_method == "sbtm":
+        hidden_dims = (256, 256)
+        training_config = {
+            "batch_size": args.sbtm_batch_size,
+            "num_epochs": args.sbtm_num_epochs,
+            "abs_tol": args.sbtm_abs_tol,
+            "lr": args.sbtm_lr,
+            "num_batch_steps": args.sbtm_num_batch_steps,
+        }
+        model = score_model.MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
+        example_name = "two_stream"
+        model_path = os.path.join(
+            path.MODELS,
+            f"{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}_c{c}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
+        )
+        if os.path.exists(model_path):
+            model.load(model_path)
+        else:
+            utils.train_initial_model(
+                model,
+                x,
+                v,
+                two_stream_score_v(v, c),
+                batch_size=training_config["batch_size"],
+                num_epochs=training_config["num_epochs"],
+                abs_tol=training_config["abs_tol"],
+                lr=training_config["lr"],
+                verbose=True,
+            )
+            try:
+                model.save(model_path)
+            except Exception as e:
+                print(f"Warning: could not save model to {model_path}: {e}")
+            time.sleep(1)
+        optimizer = nnx.Optimizer(model, optax.adamw(training_config["lr"]))
+
+        def score_fn(x_in, v_in, cells_in, eta_in):
+            return model(x_in, v_in)
     else:
         raise ValueError(f"Unknown score method: {score_method}")
 
     print(f"Args: {args}")
 
-    def spatial_density(x):
-        return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
-
-    # Ideal target in v: symmetric two-stream mixture
-    def v_target(vv):
-        return 0.5 * (
-            jax.scipy.stats.norm.pdf(vv, -c, 1.0) +
-            jax.scipy.stats.norm.pdf(vv,  c, 1.0)
-        )
-
-    max_value = jnp.max(spatial_density(cells))
-    domain = (0.0, float(L))
-    x = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n)
 
     rho = utils.evaluate_charge_density(x, cells, eta, w)
     E = jnp.cumsum(rho - 1) * eta
     E = E - jnp.mean(E)
 
+    def v_target(vv):
+        return 0.5 * jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0)
     fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
     wandb.log({"initial_state": wandb.Image(fig_init)}, step=0)
     plt.show()
@@ -126,31 +179,26 @@ def main():
 
     print(
         f"Two-stream with n={n:.0e}, M={M}, dt={dt}, eta={float(eta):.4f}, "
-        f"score_method={args.score_method}, dv={dv}, C={C}, alpha={alpha}, k={k}, c={c}, gpu={args.gpu}, fp32={args.fp32}"
+        f"score_method={score_method}, dv={dv}, C={C}, alpha={alpha}, k={k}, c={c}, gpu={args.gpu}, fp32={args.fp32}"
     )
 
-    # Quiver of scores before time stepping
-    s_kde = score_fn(x, v, cells, eta)
-    def two_stream_score_v(v, c):
-        # v: (n, dv)
-        v1 = v[:, 0]                      # (n,)
-        r = jnp.tanh(c * v1)              # (n,)
-        mu = jnp.zeros(v.shape[1], v.dtype).at[0].set(c)  # (dv,)
-        return -v + r[:, None] * mu       # (n, dv)
+    if score_method == "sbtm":
+        s_plot = model(x, v)
+    else:
+        s_plot = score_fn(x, v, cells, eta)
     s_true = two_stream_score_v(v, c)
 
-    fig_quiver = utils.plot_score_quiver(v, s_kde, s_true, label=score_method)
+    fig_quiver = utils.plot_score_quiver(v, s_plot, s_true, label=score_method)
     wandb.log({"score_quiver": wandb.Image(fig_quiver)}, step=0)
     plt.show()
     plt.close(fig_quiver)
 
-    # Main time loop with steps/sec logging
-    snapshot_times = np.linspace(0.0, final_time, 6)        # [0,10,20,30,40,50]
+    snapshot_times = np.linspace(0.0, final_time, 6)
     snapshot_steps = set(int(round(T / dt)) for T in snapshot_times)
 
     x_traj, v_traj, t_traj = [], [], []
     start_time = time.perf_counter()
-    for istep in tqdm(range(num_steps+1)):
+    for istep in tqdm(range(num_steps + 1)):
         if istep in snapshot_steps:
             x_host = np.asarray(x.block_until_ready())
             v_host = np.asarray(v.block_until_ready())
@@ -161,49 +209,73 @@ def main():
         x, v, E = utils.vlasov_step(x, v, E, cells, eta, dt, L, w)
 
         if C > 0:
-            s = score_fn(x, v, cells, eta)
-            Q = utils.collision(x, v, s, eta, gamma, n, L, w)
+            if score_method == "sbtm":
+                s = model(x, v)
+                key = jr.PRNGKey(istep)
+                utils.train_score_model(
+                    model,
+                    optimizer,
+                    x,
+                    v,
+                    key,
+                    batch_size=training_config["batch_size"],
+                    num_batch_steps=training_config["num_batch_steps"],
+                )
+            else:
+                s = score_fn(x, v, cells, eta)
+            Q = utils.collision(x, v, s, eta, gamma, L, w)
             v = v - dt * C * Q
 
         E = E - jnp.mean(E)
         E_norm = jnp.sqrt(jnp.sum(E ** 2) * eta)
         E_L2.append(E_norm)
 
-        # logging
         if (istep + 1) % args.log_every == 0:
             elapsed = time.perf_counter() - start_time
             steps_per_sec = (istep + 1) / elapsed
-            wandb.log({
-                "step": istep + 1,
-                "time": float((istep + 1) * dt),
-                "E_L2": float(E_norm),
-                "steps_per_sec": steps_per_sec,
-            }, step=istep + 1)
+            wandb.log(
+                {
+                    "step": istep + 1,
+                    "time": float((istep + 1) * dt),
+                    "E_L2": float(E_norm),
+                    "steps_per_sec": steps_per_sec,
+                },
+                step=istep + 1,
+            )
 
-    # Phase-space snapshots from x_traj, v_traj
     title = fr"Two-stream α={alpha}, k={k}, c={c}, C={C}, n={n:.0e}, M={M}, Δt={dt}, {score_method}"
     outdir_ps = f"data/plots/phase_space/two_stream_1d_{dv}v/"
     fname_ps = f"two_stream_phase_space_n{n:.0e}_M{M}_dt{dt}_dv{dv}_C{C}_alpha{alpha}_k{k}_c{c}.png"
-    
+
     fig_ps, path_ps = utils.plot_phase_space_snapshots(
         x_traj, v_traj, t_traj, L, title, outdir_ps, fname_ps
     )
-    
+
     wandb.log({"phase_space_snapshots": wandb.Image(fig_ps)}, step=num_steps + 1)
     plt.show()
     plt.close(fig_ps)
 
-    # log snapshots
     snap_art = wandb.Artifact(
         name="two_stream_snapshots",
-        type="snapshot_data"
+        type="snapshot_data",
     )
     snap_art.add_file(os.path.join(outdir_ps, fname_ps))
     snap_art.metadata = dict(
-        n=n, M=M, dt=dt, dv=dv, C=C,
-        alpha=alpha, k=k, c=c, score_method=score_method,
+        n=n,
+        M=M,
+        dt=dt,
+        dv=dv,
+        C=C,
+        alpha=alpha,
+        k=k,
+        c=c,
+        score_method=score_method,
     )
-    snapshots_dir = os.path.join(path.DATA, "snapshots", f"two_stream_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}_c{c}")
+    snapshots_dir = os.path.join(
+        path.DATA,
+        "snapshots",
+        f"two_stream_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}_c{c}",
+    )
     os.makedirs(snapshots_dir, exist_ok=True)
     snapshots_raw_path = os.path.join(snapshots_dir, "snapshots_raw.npz")
     np.savez_compressed(
@@ -215,7 +287,6 @@ def main():
     snap_art.add_file(snapshots_raw_path)
     wandb.log_artifact(snap_art)
 
-    # Post-processing: two-stream growth fit
     t_grid = jnp.linspace(0, final_time, num_steps + 2)
     t_np = np.asarray(t_grid)
     E_np = np.asarray(E_L2)

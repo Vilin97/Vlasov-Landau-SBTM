@@ -130,7 +130,10 @@ def main():
             model.load(model_path)
         else:
             utils.train_initial_model(model, x, v, -v, batch_size=training_config["batch_size"], num_epochs=training_config["num_epochs"], abs_tol=training_config["abs_tol"], lr=training_config["lr"], verbose=True)
-            model.save(model_path)
+            try:
+                model.save(model_path)
+            except Exception as e:
+                print(f"Warning: could not save model to {model_path}: {e}")
             time.sleep(1)
         optimizer = nnx.Optimizer(model, optax.adamw(training_config["lr"]))
 

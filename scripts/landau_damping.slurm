@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=landau_damping_sbtm
+#SBATCH --job-name=landau_damping
 #SBATCH --account=amath
 #SBATCH --partition=gpu-rtx6k
 #SBATCH --gres=gpu:1
@@ -9,6 +9,7 @@
 #SBATCH --array=0-3
 #SBATCH --output=logs/%x_%N_%A_%a.out   # A=array job ID, a=array index
 
+# Collision strength C values
 C_VALUES=(0 0.01 0.1 1.0)
 C=${C_VALUES[$SLURM_ARRAY_TASK_ID]}
 
