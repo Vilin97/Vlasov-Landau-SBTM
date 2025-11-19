@@ -30,7 +30,7 @@ def plot_score_quiver(v, score, score_true, label, num_points=500, figsize=(5, 5
         scale=5,
         angles="xy",
         scale_units="xy",
-        label=f"{label} score n={n:.0e} mse={float(jnp.mean((score - score_true)**2)):.3f}",
+        label=f"{label} score n={n:.0e} mse={float(jnp.mean((score - score_true)**2)):.5f}",
     )
     plt.quiver(
         v_plot[:, 0],
@@ -370,6 +370,37 @@ def scaled_score_kde(x, v, cells, eta, eta_scale=4, hv_scale=4, output_scale=1.3
 #------------------------------------------------------------------------------
 # Landau collision operator
 #------------------------------------------------------------------------------
+def compute_window_params(N, eta, box_length, bucket_size=100, safety_factor=1.2):
+    """
+    Calculates the required window size based on density and buckets it.
+    
+    Args:
+        N: Number of particles
+        eta: Interaction radius
+        box_length: Domain size
+        bucket_size: Round up to multiples of this (prevents frequent recompilation)
+        safety_factor: Multiplier to account for particle clustering (non-uniformity)
+    """
+    # Average density of particles
+    density = N / box_length
+    
+    # Expected neighbors in range [-eta, +eta] (so 2 * eta)
+    # We only need 'window_size' which is the radius (neighbors on ONE side)
+    avg_neighbors_radius = density * eta
+    
+    # Add safety margin for clustering
+    target_size = avg_neighbors_radius * safety_factor
+    
+    # Round up to nearest bucket_size (e.g., 100)
+    # Formula: ceil(x / 100) * 100
+    window_size = math.ceil(target_size / bucket_size) * bucket_size
+    
+    # Clamp: Window cannot be larger than N//2 (wrapping around the world)
+    window_size = min(int(window_size), N // 2)
+    
+    # Ensure at least 1 to avoid shape errors
+    return max(window_size, 1)
+
 @jax.jit
 def A_apply(dv, ds, gamma, eps=1e-14):
     v2 = jnp.sum(dv * dv, axis=-1, keepdims=True) + eps
@@ -377,52 +408,80 @@ def A_apply(dv, ds, gamma, eps=1e-14):
     dvds = jnp.sum(dv * ds, axis=-1, keepdims=True)
     return vg * (v2 * ds - dvds * dv)
 
-
-@partial(jax.jit, static_argnames=['num_cells'])
-def collision(x, v, s, eta, gamma, num_cells, box_length, w):
+@partial(jax.jit, static_argnames=['window_size'])
+def collision_rolling(x, v, s, eta, gamma, box_length, w, window_size):
     """
-    Q_i = w Σ_{|x_i−x_j|≤η} ψ(x_i−x_j) A(v_i−v_j)(s_i−s_j)
-    with linear-hat kernel ψ of width eta, periodic on [0,L].
-    Complexity O(N η/L).
+    O(N) Memory implementation using Vectorized Rolling.
     """
     if x.ndim == 2:
         x = x[:, 0]
+    
     N, d = v.shape
-    M = num_cells
 
-    cell = (jnp.floor(x / eta).astype(jnp.int32)) % M
-    order = jnp.argsort(cell)
-    x, v, s, cell = x[order], v[order], s[order], cell[order]
+    # 1. Sort (Essential for windowing)
+    order = jnp.argsort(x)
+    x_sorted = x[order]
+    v_sorted = v[order]
+    s_sorted = s[order]
 
-    counts = jnp.bincount(cell, length=M)
-    starts = jnp.cumsum(jnp.concatenate([jnp.array([0]), counts[:-1]]))
+    # 2. Define the loop body
+    # Instead of a massive matrix, we compute one "offset layer" at a time.
+    def body_fn(i, val):
+        Q_accum = val
+        
+        # Map loop index i (0 to 2*window) to offset (-window to +window)
+        offset = i - window_size
+        
+        # Fetch Neighbor Data using Roll
+        # jnp.roll is O(N) and very fast on GPU
+        x_neighbor = jnp.roll(x_sorted, shift=offset, axis=0)
+        v_neighbor = jnp.roll(v_sorted, shift=offset, axis=0)
+        s_neighbor = jnp.roll(s_sorted, shift=offset, axis=0)
 
-    def centered_mod(y, L):
-        return (y + L / 2) % L - L / 2
+        # Periodic Distance
+        dx = x_sorted - x_neighbor
+        dx = (dx + box_length / 2) % box_length - box_length / 2
+        dist = jnp.abs(dx)
+        
+        # Physics & Masking
+        # We multiply by (offset != 0) to avoid self-interaction
+        mask = (dist <= eta) & (dist > 0.0) & (offset != 0)
+        
+        psi = jnp.maximum(0.0, 1.0 - dist / eta) / eta
+        psi = psi * mask
 
-    def psi(y, eta, box_length):
-        y = centered_mod(y, box_length)
-        kernel = jnp.maximum(0.0, 1.0 - jnp.abs(y / eta))
-        return kernel / eta
+        # Since we are 1D in the loop, we need to expand dims for broadcasting
+        # psi is (N,), we need (N, 1) to multiply against (N, d)
+        psi = psi[:, None]
 
-    def Q_single(i):
-        xi, vi, si = x[i], v[i], s[i]
-        ci = cell[i]
-        acc = jnp.zeros(d)
+        dv = v_sorted - v_neighbor
+        ds = s_sorted - s_neighbor
+        
+        interaction = A_apply(dv, ds, gamma)
+        
+        # Accumulate result
+        return Q_accum + interaction * psi
 
-        for c in ((ci - 1) % M, ci, (ci + 1) % M):
-            start = starts[c]
-            end = start + counts[c]
+    # 3. Run the Loop
+    # We iterate 2*window_size + 1 times.
+    # Unlike your original code, the work inside here is perfectly balanced (size N).
+    Q_init = jnp.zeros_like(v)
+    Q_sorted = lax.fori_loop(0, 2 * window_size + 1, body_fn, Q_init)
 
-            def add_j(j, accj):
-                ψ = psi(xi - x[j], eta, box_length)
-                dv_ = vi - v[j]
-                ds_ = si - s[j]
-                return accj + ψ * A_apply(dv_, ds_, gamma)
-
-            acc = lax.fori_loop(start, end, add_j, acc)
-        return acc
-
-    Q_sorted = jax.vmap(Q_single)(jnp.arange(N))
+    # 4. Unsort
     rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
     return w * Q_sorted[rev]
+
+# on rtx6k, with fp64, n=1e6, M=100, dv=2, takes ~16s and 448Mb memory
+def collision(x, v, s, eta, gamma, box_length, w):
+    """
+    Driver function that calculates window size and dispatches to JIT kernel.
+    """
+    n = v.shape[0]
+    
+    # 1. Pre-compute the window size (Python int)
+    # This is fast and happens outside JAX.
+    win_size = compute_window_params(n, eta, box_length)
+    
+    # 2. Call the JIT-compiled kernel
+    return collision_rolling(x, v, s, eta, gamma, box_length, w, window_size=win_size)

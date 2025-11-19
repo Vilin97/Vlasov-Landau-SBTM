@@ -1,4 +1,5 @@
 #%%
+import math
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -6,9 +7,11 @@ from jax import lax
 import time
 from functools import partial
 import os
+import numpy as np
 
-# jax.config.update("jax_enable_x64", True)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+jax.config.update("jax_traceback_filtering", "off")
+jax.config.update("jax_enable_x64", True)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # runtime
 def bench(fn, *args, repeat=3, name=None, **kwargs):
@@ -165,8 +168,10 @@ def collision_2(x, v, s, eta, C, gamma, box_length, num_cells):
     return w_particle * Q_sorted[rev]
 
 # THERE IS NO BEST VERSION
-# with fp32, n=4e5, M=100, dv=2, takes ~1.2s and 250Mb memory
-# with fp32, n=1e6, M=100, dv=2, takes ~6.4s and 640Mb memory
+# on l40s, with fp32, n=4e5, M=100, dv=2, takes ~1.2s and 250Mb memory
+# on l40s, with fp32, n=1e6, M=100, dv=2, takes ~6.4s and 640Mb memory
+# on rtx6k, with fp64, n=4e5, M=100, dv=2, takes ~5.1s and 550Mb memory
+# on rtx6k, with fp64, n=1e6, M=100, dv=2, takes ~31s and 1.4Gb memory
 @partial(jax.jit, static_argnames=['num_cells'])
 def collision_3(x, v, s, eta, gamma, num_cells, box_length, w):
     """ 
@@ -223,6 +228,195 @@ def collision_3(x, v, s, eta, gamma, num_cells, box_length, w):
 
     rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
     return w * Q_sorted[rev]
+
+# --- Gemini's attempt: collision_4 with dynamic window size ---
+@jax.jit
+def A_apply_new(dv, ds, gamma, eps=1e-14):
+    """Applies the collision operator A to velocity and signal differences."""
+    v2 = jnp.sum(dv * dv, axis=-1, keepdims=True) + eps
+    # Use exp/log for stability with variable gamma, or simple power if gamma is int
+    vg = jnp.exp(0.5 * gamma * jnp.log(v2)) 
+    dvds = jnp.sum(dv * ds, axis=-1, keepdims=True)
+    return vg * (v2 * ds - dvds * dv)
+
+# We mark 'window_size' as static so JAX can unroll the loops efficiently.
+@partial(jax.jit, static_argnames=['window_size'])
+def collision_kernel(x, v, s, eta, gamma, box_length, w, window_size):
+    if x.ndim == 2:
+        x = x[:, 0]
+    
+    N, d = v.shape
+    
+    # A. Sort particles spatially (1D)
+    order = jnp.argsort(x)
+    x_sorted = x[order]
+    v_sorted = v[order]
+    s_sorted = s[order]
+    
+    # B. Create Neighbor Indices (The Sliding Window)
+    # Creates a matrix of shape (N, 2*window_size + 1)
+    offsets = jnp.arange(-window_size, window_size + 1)
+    neighbor_indices = (jnp.arange(N)[:, None] + offsets[None, :]) % N
+    
+    # C. Gather Neighbor Data
+    x_neighbors = x_sorted[neighbor_indices] # (N, Window, 1)
+    v_neighbors = v_sorted[neighbor_indices] # (N, Window, d)
+    s_neighbors = s_sorted[neighbor_indices] # (N, Window, d)
+    
+    # D. Compute Distances & Periodic Wrapping
+    dx = x_sorted[:, None] - x_neighbors
+    # Minimum Image Convention for 1D periodic boundary
+    dx = (dx + box_length / 2) % box_length - box_length / 2
+    dist = jnp.abs(dx)
+
+    # E. Masking
+    # 1. Ignore neighbors outside interaction radius 'eta'
+    # 2. Ignore self-interaction (dist > 0)
+    mask = (dist <= eta) & (dist > 0.0)
+    
+    # F. Linear Hat Kernel
+    psi = jnp.maximum(0.0, 1.0 - dist / eta) / eta
+    psi = psi * mask # Zero out invalid interactions
+    
+    # G. Physics Interaction (Vectorized)
+    # Broadcast (N, 1, d) against (N, Window, d)
+    dv_vec = v_sorted[:, None, :] - v_neighbors
+    ds_vec = s_sorted[:, None, :] - s_neighbors
+    
+    interaction = A_apply_new(dv_vec, ds_vec, gamma) # (N, Window, d)
+    
+    # Sum over the window dimension (axis 1)
+    # We broadcast psi (N, Window) to (N, Window, 1)
+    Q_sorted = jnp.sum(interaction * psi[:, :, None], axis=1)
+    
+    # H. Unsort (Scatter back to original order)
+    rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
+    return w * Q_sorted[rev]
+
+def compute_window_params(N, eta, box_length, bucket_size=100, safety_factor=1.2):
+    """
+    Calculates the required window size based on density and buckets it.
+    
+    Args:
+        N: Number of particles
+        eta: Interaction radius
+        box_length: Domain size
+        bucket_size: Round up to multiples of this (prevents frequent recompilation)
+        safety_factor: Multiplier to account for particle clustering (non-uniformity)
+    """
+    # Average density of particles
+    density = N / box_length
+    
+    # Expected neighbors in range [-eta, +eta] (so 2 * eta)
+    # We only need 'window_size' which is the radius (neighbors on ONE side)
+    avg_neighbors_radius = density * eta
+    
+    # Add safety margin for clustering
+    target_size = avg_neighbors_radius * safety_factor
+    
+    # Round up to nearest bucket_size (e.g., 100)
+    # Formula: ceil(x / 100) * 100
+    window_size = math.ceil(target_size / bucket_size) * bucket_size
+    
+    # Clamp: Window cannot be larger than N//2 (wrapping around the world)
+    window_size = min(int(window_size), N // 2)
+    
+    # Ensure at least 1 to avoid shape errors
+    return max(window_size, 1)
+    
+def collision_4(x, v, s, eta, gamma, box_length, w):
+    """
+    Driver function that calculates window size and dispatches to JIT kernel.
+    """
+    N = v.shape[0]
+    
+    # 1. Pre-compute the window size (Python int)
+    # This is fast and happens outside JAX.
+    win_size = compute_window_params(N, eta, box_length)
+    
+    # 2. Call the JIT-compiled kernel
+    # JAX will compile a version for 'win_size=100'.
+    # If density increases and win_size becomes 200, JAX compiles a new version.
+    return collision_kernel(x, v, s, eta, gamma, box_length, w, window_size=win_size)
+
+# --- Gemini's second attempt: collision_5 with smaller memory footprint ---
+@partial(jax.jit, static_argnames=['window_size'])
+def collision_rolling(x, v, s, eta, gamma, box_length, w, window_size):
+    """
+    O(N) Memory implementation using Vectorized Rolling.
+    """
+    if x.ndim == 2:
+        x = x[:, 0]
+    
+    N, d = v.shape
+
+    # 1. Sort (Essential for windowing)
+    order = jnp.argsort(x)
+    x_sorted = x[order]
+    v_sorted = v[order]
+    s_sorted = s[order]
+
+    # 2. Define the loop body
+    # Instead of a massive matrix, we compute one "offset layer" at a time.
+    def body_fn(i, val):
+        Q_accum = val
+        
+        # Map loop index i (0 to 2*window) to offset (-window to +window)
+        offset = i - window_size
+        
+        # Fetch Neighbor Data using Roll
+        # jnp.roll is O(N) and very fast on GPU
+        x_neighbor = jnp.roll(x_sorted, shift=offset, axis=0)
+        v_neighbor = jnp.roll(v_sorted, shift=offset, axis=0)
+        s_neighbor = jnp.roll(s_sorted, shift=offset, axis=0)
+
+        # Periodic Distance
+        dx = x_sorted - x_neighbor
+        dx = (dx + box_length / 2) % box_length - box_length / 2
+        dist = jnp.abs(dx)
+        
+        # Physics & Masking
+        # We multiply by (offset != 0) to avoid self-interaction
+        mask = (dist <= eta) & (dist > 0.0) & (offset != 0)
+        
+        psi = jnp.maximum(0.0, 1.0 - dist / eta) / eta
+        psi = psi * mask
+
+        # Since we are 1D in the loop, we need to expand dims for broadcasting
+        # psi is (N,), we need (N, 1) to multiply against (N, d)
+        psi = psi[:, None]
+
+        dv = v_sorted - v_neighbor
+        ds = s_sorted - s_neighbor
+        
+        interaction = A_apply_new(dv, ds, gamma)
+        
+        # Accumulate result
+        return Q_accum + interaction * psi
+
+    # 3. Run the Loop
+    # We iterate 2*window_size + 1 times.
+    # Unlike your original code, the work inside here is perfectly balanced (size N).
+    Q_init = jnp.zeros_like(v)
+    Q_sorted = lax.fori_loop(0, 2 * window_size + 1, body_fn, Q_init)
+
+    # 4. Unsort
+    rev = jnp.empty_like(order).at[order].set(jnp.arange(N))
+    return w * Q_sorted[rev]
+
+# on rtx6k, with fp64, n=1e6, M=100, dv=2, takes ~16s and 448Mb memory
+def collision_5(x, v, s, eta, gamma, box_length, w):
+    """
+    Driver function that calculates window size and dispatches to JIT kernel.
+    """
+    n = v.shape[0]
+    
+    # 1. Pre-compute the window size (Python int)
+    # This is fast and happens outside JAX.
+    win_size = compute_window_params(n, eta, box_length)
+    
+    # 2. Call the JIT-compiled kernel
+    return collision_rolling(x, v, s, eta, gamma, box_length, w, window_size=win_size)
 #%%
 # prepare data
 seed = 42
@@ -230,7 +424,7 @@ dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 k = 0.5
 L = 2 * jnp.pi / k   # ~12.566
-n = 4*10**5    # number of particles
+n = 10**6    # number of particles
 M = 100      # number of cells
 eta = L / M  # cell size
 cells = (jnp.arange(M) + 0.5) * eta
@@ -242,7 +436,7 @@ x = jr.uniform(key_x, shape=(n,1)) * L
 s = jr.multivariate_normal(key_v, jnp.zeros(dv), jnp.eye(dv), shape=(n,))
 
 C = 1.0
-gamma = -3.0
+gamma = -dv
 box_length = L
 num_cells = M
 
@@ -251,17 +445,31 @@ num_cells = M
 result_collision = collision(x, v, s, eta, C, gamma, box_length, num_cells)
 result_collision_2 = collision_2(x, v, s, eta, C, gamma, box_length, num_cells)
 result_collision_3 = collision_3(x, v, s, eta, gamma, num_cells, box_length, L / n)
+result_collision_4 = collision_4(x, v, s, eta, gamma, box_length, L / n)
+result_collision_5 = collision_5(x, v, s, eta, gamma, box_length, L / n)
 abs_diff_2 = jnp.abs(result_collision - result_collision_2)
 abs_diff_3 = jnp.abs(result_collision - result_collision_3)
+abs_diff_4 = jnp.abs(result_collision - result_collision_4)
+abs_diff_5 = jnp.abs(result_collision - result_collision_5)
 print(f"Max abs diff collision vs collision_2: {jnp.max(abs_diff_2):.6e}")
 print(f"Max abs diff collision vs collision_3: {jnp.max(abs_diff_3):.6e}")
+print(f"Max abs diff collision vs collision_4: {jnp.max(abs_diff_4):.6e}")
+print(f"Max abs diff collision vs collision_5: {jnp.max(abs_diff_5):.6e}")
 
 #%%
+print(f"Number of particles: {n:.0e}, Number of cells: {num_cells}, eta: {eta:.4f}, box_length: {box_length:.4f}")
 # benchmark runtime and memory
-bench(collision, x, v, s, eta, C, gamma, box_length, num_cells, name="collision")
-cost(collision, x, v, s, eta, C, gamma, box_length, num_cells, name="collision")
-bench(collision_2, x, v, s, eta, C, gamma, box_length, num_cells, name="collision_2")
-cost(collision_2, x, v, s, eta, C, gamma, box_length, num_cells, name="collision_2")
+# bench(collision, x, v, s, eta, C, gamma, box_length, num_cells, name="collision")
+# cost(collision, x, v, s, eta, C, gamma, box_length, num_cells, name="collision")
+# bench(collision_2, x, v, s, eta, C, gamma, box_length, num_cells, name="collision_2")
+# cost(collision_2, x, v, s, eta, C, gamma, box_length, num_cells, name="collision_2")
 bench(collision_3, x, v, s, eta, gamma, num_cells, box_length, L / n, name="collision_3")
 cost(collision_3, x, v, s, eta, gamma, num_cells, box_length, L / n, name="collision_3")
-# %%
+
+# bench(collision_4, x, v, s, eta, gamma, box_length, L / n, name="collision_4")
+# window_size = compute_window_params(v.shape[0], eta, box_length, bucket_size=100, safety_factor=1.2)
+# cost(collision_kernel, x, v, s, eta, gamma, box_length, L / n, window_size=window_size, name="collision_4")
+
+bench(collision_5, x, v, s, eta, gamma, box_length, L / n, name="collision_5")
+window_size = compute_window_params(v.shape[0], eta, box_length, bucket_size=100, safety_factor=1.2)
+cost(collision_rolling, x, v, s, eta, gamma, box_length, L / n, window_size=window_size, name="collision_5")
