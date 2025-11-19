@@ -10,7 +10,8 @@
 #SBATCH --output=logs/%x_%N_%A_%a.out   # A=array job ID, a=array index
 
 # Possible C values
-C_VALUES=(0 0.01 0.02 0.04 0.08)
+# C_VALUES=(0 0.01 0.02 0.04 0.08)
+C_VALUES=(0.16 0.32 0.64 1.28 2.56)
 C=${C_VALUES[$SLURM_ARRAY_TASK_ID]}
 
 source /gscratch/amath/vilin/conda/etc/profile.d/conda.sh
