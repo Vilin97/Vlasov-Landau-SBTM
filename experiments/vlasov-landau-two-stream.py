@@ -100,7 +100,16 @@ def main():
         return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
     max_value = jnp.max(spatial_density(cells))
     domain = (0.0, float(L))
-    x = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n)
+    
+    # symmetric initialization in x
+    x1 = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n//2)
+    x2 = L - x1
+    x = jnp.concatenate([x1, x2])
+    shuffle_keys = jr.split(key_x, 2)
+    perm1 = jr.permutation(shuffle_keys[0], n)
+    perm2 = jr.permutation(shuffle_keys[1], n)
+    x = x[perm1]
+    v = v[perm2]
 
     score_method = args.score_method
     model = None

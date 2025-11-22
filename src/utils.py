@@ -247,10 +247,10 @@ def update_electric_field(E, x, v, cells, eta, w, dt):
 def vlasov_step(x, v, E, cells, eta, dt, box_length, w):
     """Forward Euler time stepping for Vlasov part."""
     E_at_particles = evaluate_field_at_particles(E, x, cells, eta)
-    v_new = v.at[:, 0].add(dt * E_at_particles)
-    x_new = jnp.mod(x + dt * v[:, 0], box_length)
-    E_new = update_electric_field(E, x, v, cells, eta, w, dt)
-    return x_new, v_new, E_new
+    v = v.at[:, 0].add(dt * E_at_particles)
+    x = jnp.mod(x + dt * v[:, 0], box_length)
+    E = update_electric_field(E, x, v, cells, eta, w, dt)
+    return x, v, E
 
 
 #------------------------------------------------------------------------------

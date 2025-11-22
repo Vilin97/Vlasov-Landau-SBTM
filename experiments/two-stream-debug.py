@@ -11,7 +11,6 @@ import numpy as np
 
 from src import utils
 
-#%% parameters (formerly defaults)
 n = 10**6          # must be even
 M = 100
 dt = 0.05
@@ -25,7 +24,6 @@ c = 2.4
 C = 0.0            # collisionless
 seed = 42
 
-#%% environment
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 jax.config.update("jax_enable_x64", not fp32)
@@ -41,9 +39,8 @@ def init_two_stream_velocities(key_v, n, dv, c):
     return jnp.vstack([v1, v2])
 
 key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
-v = init_two_stream_velocities(key_v, n, dv, c)
+v = init_two_stream_velocities(key_v, n, dv, c) # hack 1: mirror velocities to ensure zero mean
 
-#%% initialize positions via rejection sampling
 L = 2 * jnp.pi / k
 eta = L / M
 cells = (jnp.arange(M) + 0.5) * eta
@@ -56,18 +53,27 @@ max_value = jnp.max(spatial_density(cells))
 domain = (0.0, float(L))
 x = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n)
 
-#%% initial E-field
+# hack 2: sample half the particles from f(x) and half from f(L - x), and shuffle
+x1 = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n//2)
+x2 = L - x1
+x = jnp.concatenate([x1, x2])
+
+# shuffle particles
+shuffle_keys = jr.split(key_x, 2)
+perm1 = jr.permutation(shuffle_keys[0], n)
+perm2 = jr.permutation(shuffle_keys[1], n)
+x = x[perm1]
+v = v[perm2]
+
 rho = utils.evaluate_charge_density(x, cells, eta, w)
 E = jnp.cumsum(rho - 1) * eta
-E = E - jnp.mean(E)
 
-#%% plot initial
 def v_target(vv):
     return 0.5 * (jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0))
 
-fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
-plt.show()
-plt.close(fig_init)
+# fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
+# plt.show()
+# plt.close(fig_init)
 
 #%% time stepping
 final_steps = int(final_time / dt)
@@ -77,8 +83,6 @@ snapshot_times = np.linspace(0.0, final_time, 6)
 snapshot_steps = set(int(round(T / dt)) for T in snapshot_times)
 
 x_traj, v_traj, t_traj = [], [], []
-start = time.perf_counter()
-
 for istep in tqdm(range(final_steps + 1)):
     # snapshots
     if istep in snapshot_steps:
@@ -88,15 +92,13 @@ for istep in tqdm(range(final_steps + 1)):
         print(x.mean() - L/2)
         print(v.mean(axis=0))
 
-    # collisionless Vlasov step
-    x, v, E = utils.vlasov_step(x, v, E, cells, eta, dt, L, w)
-    E = E - jnp.mean(E)
+    E_at_particles = utils.evaluate_field_at_particles(E, x, cells, eta)
+    v = v.at[:, 0].add(dt * E_at_particles)
+    x = jnp.mod(x + dt * v[:, 0], L)
+    E = utils.update_electric_field(E, x, v, cells, eta, w, dt)
 
-#%% phase-space snapshot plots
 title = fr"Two-stream α={alpha}, k={k}, c={c}, C=0, n={n:.0e}, M={M}, dt={dt}"
 fig_ps, _ = utils.plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, save=False)
 plt.show()
 plt.close(fig_ps)
 
-
-# %%
