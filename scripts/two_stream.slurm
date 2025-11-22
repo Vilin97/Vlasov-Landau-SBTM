@@ -6,51 +6,31 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-3
-#SBATCH --output=logs/%x_%N_%A_%a.out   # A=array job ID, a=array index
+#SBATCH --array=0-15
+#SBATCH --output=logs/%x_%N_%A_%a.out
 
-# Collision strength C values
-# C_VALUES=(0 0.01 0.02 0.04 0.08)
-# C_VALUES=(0.16 0.32 0.64 1.28)
-# C=${C_VALUES[$SLURM_ARRAY_TASK_ID]}
+DVS=(2 3)
+SCORE_METHODS=(kde sbtm)
+C_VALUES=(0 0.02 0.08 0.32)
 
-# sbtm_num_batch_steps values
-SBTM_STEPS_VALUES=(0 10 100 1000)
-SBTM_STEPS=${SBTM_STEPS_VALUES[$SLURM_ARRAY_TASK_ID]}
+tid=$SLURM_ARRAY_TASK_ID
+idx_C=$(( tid % 4 ))
+idx_sm=$(( (tid / 4) % 2 ))
+idx_dv=$(( tid / 8 ))
+
+dv=${DVS[$idx_dv]}
+score_method=${SCORE_METHODS[$idx_sm]}
+C=${C_VALUES[$idx_C]}
 
 source /gscratch/amath/vilin/conda/etc/profile.d/conda.sh
 conda activate vlsbtm
-
-# srun python3 experiments/vlasov-landau-two-stream.py \
-#   --n 1_000_000 \
-#   --M 100 \
-#   --dt 0.05 \
-#   --gpu 0 \
-#   --dv 2 \
-#   --final_time 50.0 \
-#   --C ${C} \
-#   --alpha 0.005 \
-#   --k 0.2 \
-#   --c 2.4 \
-#   --score_method kde \
-#   --sbtm_num_batch_steps 10 \
-#   --wandb_project vlasov_landau_two_stream \
-#   --wandb_run_name "n1e6_M100_dt0.05_C${C}_kde" \
-#   --wandb_mode online
 
 srun python3 experiments/vlasov-landau-two-stream.py \
   --n 1_000_000 \
   --M 100 \
   --dt 0.05 \
-  --gpu 0 \
-  --dv 2 \
-  --final_time 50.0 \
-  --C 0.08 \
-  --alpha 0.005 \
-  --k 0.2 \
-  --c 2.4 \
-  --score_method sbtm \
-  --sbtm_num_batch_steps ${SBTM_STEPS} \
+  --dv "${dv}" \
+  --C "${C}" \
+  --score_method "${score_method}" \
   --wandb_project vlasov_landau_two_stream \
-  --wandb_run_name "n1e6_M100_dt0.05_C0.08_sbtm_steps${SBTM_STEPS}" \
-  --wandb_mode online
+  --wandb_run_name "n1e6_M100_dt0.05_dv${dv}_C${C}_${score_method}"
