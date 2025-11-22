@@ -187,6 +187,17 @@ def main():
             v_traj.append(v_host)
             t_traj.append(istep * dt)
 
+            if score_method == "sbtm":
+                s_snap = model(x, v)
+            else:
+                s_snap = score_fn(x, v, cells, eta)
+
+            fig_quiver_snap = utils.plot_score_quiver_pred(
+                v, s_snap, label=f"{score_method}, t={istep * dt:.2f}"
+            )
+            wandb.log({"score_quiver": wandb.Image(fig_quiver_snap)}, step=istep)
+            plt.close(fig_quiver_snap)
+
         x, v, E = utils.vlasov_step(x, v, E, cells, eta, dt, L, w)
 
         if C > 0:

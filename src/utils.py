@@ -15,6 +15,34 @@ import optax
 # ------------------------------------------------------------------------------
 # Visualization utilities
 # ------------------------------------------------------------------------------
+def plot_score_quiver_pred(v, score, label, num_points=500, figsize=(5, 5)):
+    assert v.shape == score.shape
+    n = v.shape[0]
+    step_sub = max(1, n // num_points)
+    v_plot = v[::step_sub]
+    score_plot = score[::step_sub]
+
+    fig_quiver = plt.figure(figsize=figsize)
+    plt.quiver(
+        v_plot[:, 0],
+        v_plot[:, 1],
+        score_plot[:, 0],
+        score_plot[:, 1],
+        alpha=0.8,
+        scale=5,
+        angles="xy",
+        scale_units="xy",
+        label=label,
+    )
+    plt.scatter(v_plot[:, 0], v_plot[:, 1], s=2, alpha=0.3)
+    plt.axis("equal")
+    plt.xlabel("v1")
+    plt.ylabel("v2")
+    plt.title(f"Estimated scores: {label}")
+    plt.legend(loc="best")
+    plt.tight_layout()
+    return fig_quiver
+
 def plot_score_quiver(v, score, score_true, label, num_points=500, figsize=(5, 5)):
     assert v.shape == score.shape == score_true.shape
     n = v.shape[0]
@@ -90,7 +118,7 @@ def visualize_initial(x, v, cells, E, rho, eta, L, spatial_density, v_target):
     plt.tight_layout()
     return fig
 
-def plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, outdir, fname, bins=None):
+def plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, outdir=None, fname=None, bins=None, save=True):
     num_snaps = len(x_traj)
     if num_snaps == 0:
         return None, None
@@ -137,9 +165,12 @@ def plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, outdir, fname, 
 
     plt.suptitle(title)
 
-    os.makedirs(outdir, exist_ok=True)
-    path = os.path.join(outdir, fname)
-    fig.savefig(path)
+    if save:
+        os.makedirs(outdir, exist_ok=True)
+        path = os.path.join(outdir, fname)
+        plt.savefig(path)
+    else:
+        path = None
 
     return fig, path
 

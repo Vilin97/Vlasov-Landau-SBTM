@@ -166,7 +166,7 @@ def main():
     E = E - jnp.mean(E)
 
     def v_target(vv):
-        return 0.5 * jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0)
+        return 0.5 * (jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0))
     fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
     wandb.log({"initial_state": wandb.Image(fig_init)}, step=0)
     plt.show()
@@ -205,6 +205,17 @@ def main():
             x_traj.append(x_host)
             v_traj.append(v_host)
             t_traj.append(istep * dt)
+
+            if score_method == "sbtm":
+                s_snap = model(x, v)
+            else:
+                s_snap = score_fn(x, v, cells, eta)
+
+            fig_quiver_snap = utils.plot_score_quiver_pred(
+                v, s_snap, label=f"{score_method}, t={istep * dt:.2f}"
+            )
+            wandb.log({"score_quiver": wandb.Image(fig_quiver_snap)}, step=istep)
+            plt.close(fig_quiver_snap)
 
         x, v, E = utils.vlasov_step(x, v, E, cells, eta, dt, L, w)
 
