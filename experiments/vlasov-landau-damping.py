@@ -208,7 +208,7 @@ def main():
         if (istep + 1) % args.log_every == 0:
             elapsed = time.perf_counter() - start_time
             steps_per_sec = (istep + 1) / elapsed
-            mom_dict = {f"momentum/{i}": float(m) for i, m in enumerate(momentum)}
+            mom_dict = {f"momentum/{i+1}": float(m) for i, m in enumerate(momentum)}
             wandb.log(
                 {
                     "step": istep + 1,
