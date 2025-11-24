@@ -172,7 +172,6 @@ def main():
 
     rho = utils.evaluate_charge_density(x, cells, eta, w)
     E = jnp.cumsum(rho - 1) * eta
-    E = E - jnp.mean(E)
 
     def v_target(vv):
         return 0.5 * (jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0))

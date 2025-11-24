@@ -217,7 +217,6 @@ def main():
             Q = utils.collision(x, v, s, eta, gamma, L, w)
             v = v - dt * C * Q
 
-        E = E - jnp.mean(E)
         t += dt
         E_norm = jnp.sqrt(jnp.sum(E ** 2) * eta)
         E_L2.append(E_norm)
