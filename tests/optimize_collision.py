@@ -405,6 +405,7 @@ def collision_rolling(x, v, s, eta, gamma, box_length, w, window_size):
     return w * Q_sorted[rev]
 
 # on rtx6k, with fp64, n=1e6, M=100, dv=2, takes ~16s and 448Mb memory
+# on l40s, with fp64, n=1e6, M=100, dv=2, takes ~4.6s and 448Mb memory
 def collision_5(x, v, s, eta, gamma, box_length, w):
     """
     Driver function that calculates window size and dispatches to JIT kernel.
@@ -511,7 +512,7 @@ dx = 1       # Position dimension
 dv = 2       # Velocity dimension
 k = 0.5
 L = 2 * jnp.pi / k   # ~12.566
-n = 10**4    # number of particles
+n = 10**6    # number of particles
 M = 100      # number of cells
 eta = L / M  # cell size
 cells = (jnp.arange(M) + 0.5) * eta
@@ -565,8 +566,8 @@ bench(collision_5, x, v, s, eta, gamma, box_length, L / n, name="collision_5")
 window_size = compute_window_params(v.shape[0], eta, box_length, bucket_size=100, safety_factor=1.2)
 cost(collision_rolling, x, v, s, eta, gamma, box_length, L / n, window_size=window_size, name="collision_5")
 
-bench(collision_6, x, v, s, eta, gamma, box_length, L / n, name="collision_6")
-cost(collision_6, x, v, s, eta, gamma, box_length, L / n, num_batches=1000, name="collision_6")
+# bench(collision_6, x, v, s, eta, gamma, box_length, L / n, name="collision_6")
+# cost(collision_6, x, v, s, eta, gamma, box_length, L / n, num_batches=1000, name="collision_6")
 
 #%%
 # TODO: try computing the collision operator in fp32 and converting to fp64. what's the error and speedup?
