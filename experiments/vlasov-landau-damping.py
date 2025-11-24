@@ -144,7 +144,6 @@ def main():
 
     rho = utils.evaluate_charge_density(x, cells, eta, w)
     E = jnp.cumsum(rho - 1) * eta
-    E = E - jnp.mean(E)
 
     fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
     wandb.log({"initial_state": wandb.Image(fig_init)}, step=0)
