@@ -405,7 +405,8 @@ def collision_rolling(x, v, s, eta, gamma, box_length, w, window_size):
     return w * Q_sorted[rev]
 
 # on rtx6k, with fp64, n=1e6, M=100, dv=2, takes ~16s and 448Mb memory
-# on l40s, with fp64, n=1e6, M=100, dv=2, takes ~4.6s and 448Mb memory
+# on l40s, with fp64, n=1e6, M=100, dv=2, takes ~4.6s
+# on H200, with fp64, n=1e6, M=100, dv=2, takes ~1.9s
 def collision_5(x, v, s, eta, gamma, box_length, w):
     """
     Driver function that calculates window size and dispatches to JIT kernel.
