@@ -1,23 +1,24 @@
 #!/bin/bash
 #SBATCH --job-name=landau_damping
 #SBATCH --account=amath
-#SBATCH --partition=gpu-rtx6k
+#SBATCH --partition=gpu-l40s
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-7
+#SBATCH --array=0-15
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
-DVS=(3)
+DVS=(2 3)
 SCORE_METHODS=(kde sbtm)
 C_VALUES=(0.0 0.1 0.4 1.0)
 
 tid=$SLURM_ARRAY_TASK_ID
 idx_C=$(( tid % 4 ))
-idx_sm=$(( tid / 4 ))
+idx_sm=$(( (tid / 4) % 2 ))
+idx_dv=$(( tid / 8 ))
 
-dv=${DVS[0]}
+dv=${DVS[$idx_dv]}
 score_method=${SCORE_METHODS[$idx_sm]}
 C=${C_VALUES[$idx_C]}
 
