@@ -89,16 +89,19 @@ for istep in tqdm(range(final_steps + 1)):
         x_traj.append(np.asarray(x.block_until_ready()))
         v_traj.append(np.asarray(v.block_until_ready()))
         t_traj.append(istep * dt)
-        print(x.mean() - L/2)
         print(v.mean(axis=0))
+        print(E.mean())
 
     E_at_particles = utils.evaluate_field_at_particles(E, x, cells, eta)
     v = v.at[:, 0].add(dt * E_at_particles)
     x = jnp.mod(x + dt * v[:, 0], L)
     E = utils.update_electric_field(E, x, v, cells, eta, w, dt)
+    # E = E - jnp.mean(E)
 
 title = fr"Two-stream α={alpha}, k={k}, c={c}, C=0, n={n:.0e}, M={M}, dt={dt}"
 fig_ps, _ = utils.plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, save=False)
 plt.show()
 plt.close(fig_ps)
 
+
+# %%
