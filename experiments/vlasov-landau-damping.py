@@ -212,23 +212,36 @@ def main():
                 s = score_fn(x, v, cells, eta)
             Q = utils.collision(x, v, s, eta, gamma, L, w)
             v = v - dt * C * Q
+            entropy_production = jnp.mean(jnp.sum(s * C * Q, axis=1))
+        else:
+            entropy_production = 0.0
 
-        t += dt
-        E_norm = jnp.sqrt(jnp.sum(E ** 2) * eta)
-        E_L2.append(E_norm)
+        electric_energy = jnp.sum(E ** 2) * eta # electric energy
+        momentum = jnp.mean(v, axis=0)
+        kinetic_energy = 0.5 * jnp.mean(jnp.sum(v ** 2, axis=1))
+        total_energy = kinetic_energy + electric_energy
+        E_L2 = jnp.sqrt(electric_energy)
 
+        E_L2.append(electric_energy)
         if (istep + 1) % args.log_every == 0:
             elapsed = time.perf_counter() - start_time
-            steps_per_sec = (istep + 1) / elapsed if elapsed > 0 else 0.0
+            steps_per_sec = (istep + 1) / elapsed
+            mom_dict = {f"momentum/{i}": float(m) for i, m in enumerate(momentum)}
             wandb.log(
                 {
                     "step": istep + 1,
-                    "time": float(t),
-                    "E_L2": float(E_norm),
+                    "time": float((istep + 1) * dt),
                     "steps_per_sec": steps_per_sec,
+                    "E_L2": float(E_L2),
+                    "electric_energy": float(electric_energy),
+                    "kinetic_energy": float(kinetic_energy),
+                    "total_energy": float(total_energy),
+                    "entropy_production": float(entropy_production),
+                    **mom_dict,
                 },
                 step=istep + 1,
             )
+
 
     # Phase-space snapshots
     title = fr"Landau damping α={alpha}, k={k}, C={C}, n={n:.0e}, M={M}, Δt={dt}, {score_method}"
