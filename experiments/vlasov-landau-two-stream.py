@@ -46,6 +46,7 @@ def parse_args():
     p.add_argument("--k", type=float, default=1/5, help="Wave number k")
     p.add_argument("--c", type=float, default=2.4, help="Beam speed for two-stream")
     p.add_argument("--score_method", type=str, default="scaled_kde", choices=["kde", "scaled_kde", "sbtm"])
+    p.add_argument("--seed", type=int, default=42, help="Random seed for initialization")
 
     # sbtm-specific args
     p.add_argument("--sbtm_batch_size", type=int, default=20_000)
@@ -76,7 +77,7 @@ def main():
         config=vars(args),
     )
 
-    seed = 42
+    seed = args.seed
     q = 1.0
     dv = args.dv
     alpha = args.alpha
