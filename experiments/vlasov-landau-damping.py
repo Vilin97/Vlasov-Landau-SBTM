@@ -220,9 +220,9 @@ def main():
         momentum = jnp.mean(v, axis=0)
         kinetic_energy = 0.5 * jnp.mean(jnp.sum(v ** 2, axis=1))
         total_energy = kinetic_energy + electric_energy
-        E_L2 = jnp.sqrt(electric_energy)
+        E_norm = jnp.sqrt(electric_energy)
 
-        E_L2.append(electric_energy)
+        E_L2.append(E_norm)
         if (istep + 1) % args.log_every == 0:
             elapsed = time.perf_counter() - start_time
             steps_per_sec = (istep + 1) / elapsed
@@ -232,7 +232,7 @@ def main():
                     "step": istep + 1,
                     "time": float((istep + 1) * dt),
                     "steps_per_sec": steps_per_sec,
-                    "E_L2": float(E_L2),
+                    "E_L2": float(E_norm),
                     "electric_energy": float(electric_energy),
                     "kinetic_energy": float(kinetic_energy),
                     "total_energy": float(total_energy),
