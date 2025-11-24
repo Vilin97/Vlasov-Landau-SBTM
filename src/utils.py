@@ -15,6 +15,34 @@ import optax
 # ------------------------------------------------------------------------------
 # Visualization utilities
 # ------------------------------------------------------------------------------
+def plot_U_quiver_pred(v, U, label, num_points=500, figsize=(5, 5)):
+    assert v.shape == U.shape
+    n = v.shape[0]
+    step_sub = max(1, n // num_points)
+    v_plot = v[::step_sub]
+    U_plot = U[::step_sub]
+
+    fig_quiver = plt.figure(figsize=figsize)
+    plt.quiver(
+        v_plot[:, 0],
+        v_plot[:, 1],
+        U_plot[:, 0],
+        U_plot[:, 1],
+        alpha=0.8,
+        scale=5,
+        angles="xy",
+        scale_units="xy",
+        label=label,
+    )
+    plt.scatter(v_plot[:, 0], v_plot[:, 1], s=2, alpha=0.3)
+    plt.axis("equal")
+    plt.xlabel("v1")
+    plt.ylabel("v2")
+    plt.title(f"Estimated flow U: {label}")
+    plt.legend(loc="best")
+    plt.tight_layout()
+    return fig_quiver
+
 def plot_score_quiver_pred(v, score, label, num_points=500, figsize=(5, 5)):
     assert v.shape == score.shape
     n = v.shape[0]

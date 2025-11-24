@@ -175,24 +175,6 @@ def main():
     x_traj, v_traj, t_traj = [], [], []
     start_time = time.perf_counter()
     for istep in tqdm(range(num_steps + 1)):
-        if istep in snapshot_steps:
-            x_host = np.asarray(x.block_until_ready())
-            v_host = np.asarray(v.block_until_ready())
-            x_traj.append(x_host)
-            v_traj.append(v_host)
-            t_traj.append(istep * dt)
-
-            if score_method == "sbtm":
-                s_snap = model(x, v)
-            else:
-                s_snap = score_fn(x, v, cells, eta)
-
-            fig_quiver_snap = utils.plot_score_quiver_pred(
-                v, s_snap, label=f"{score_method}, t={istep * dt:.2f}"
-            )
-            wandb.log({"score_quiver": wandb.Image(fig_quiver_snap)}, step=istep)
-            plt.close(fig_quiver_snap)
-
         x, v, E = utils.vlasov_step(x, v, E, cells, eta, dt, L, w)
 
         if C > 0:
@@ -241,6 +223,31 @@ def main():
                 },
                 step=istep + 1,
             )
+        
+        # snapshots
+        if istep in snapshot_steps:
+            x_host = np.asarray(x.block_until_ready())
+            v_host = np.asarray(v.block_until_ready())
+            x_traj.append(x_host)
+            v_traj.append(v_host)
+            t_traj.append(istep * dt)
+
+            if score_method == "sbtm":
+                s = model(x, v)
+            else:
+                s = score_fn(x, v, cells, eta)
+            Q = utils.collision(x, v, s, eta, gamma, L, w)
+
+            fig_quiver_score_snap = utils.plot_score_quiver_pred(
+                v, s, label=f"{score_method}, t={istep * dt:.2f}"
+            )
+            wandb.log({"score_quiver": wandb.Image(fig_quiver_score_snap)}, step=istep)
+            plt.close(fig_quiver_score_snap)
+            
+            fig_quiver_flow_snap = utils.plot_U_quiver_pred(v, -Q, label=f"{score_method}, t={istep * dt:.2f}")
+            wandb.log({"flow_quiver": wandb.Image(fig_quiver_flow_snap)}, step=istep)
+            plt.close(fig_quiver_flow_snap)
+
 
 
     # Phase-space snapshots
