@@ -241,11 +241,11 @@ def main():
             fig_quiver_score_snap = utils.plot_score_quiver_pred(
                 v, s, label=f"{score_method}, t={istep * dt:.2f}"
             )
-            wandb.log({"score_quiver": wandb.Image(fig_quiver_score_snap)}, step=istep)
+            wandb.log({"score_quiver": wandb.Image(fig_quiver_score_snap)}, step=istep+1)
             plt.close(fig_quiver_score_snap)
             
             fig_quiver_flow_snap = utils.plot_U_quiver_pred(v, -Q, label=f"{score_method}, t={istep * dt:.2f}")
-            wandb.log({"flow_quiver": wandb.Image(fig_quiver_flow_snap)}, step=istep)
+            wandb.log({"flow_quiver": wandb.Image(fig_quiver_flow_snap)}, step=istep+1)
             plt.close(fig_quiver_flow_snap)
 
 
