@@ -113,19 +113,21 @@ def main():
     gamma = -dv
     dx = 1
 
-    key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
-    v = init_two_stream_velocities(key_v, n, dv, c)
-
     def spatial_density(x):
         return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
     max_value = jnp.max(spatial_density(cells))
     domain = (0.0, float(L))
     
     # symmetric initialization in x
-    x1 = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n//2)
-    x2 = L - x1
+    key = jr.PRNGKey(seed)
+    key_x, key_v, perm_key = jr.split(key, 3)
+    domain = (0.0, L)
+    x1 = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n//2) 
+    x2 = L - x1 
     x = jnp.concatenate([x1, x2])
-    shuffle_keys = jr.split(key_x, 2)
+
+    v = init_two_stream_velocities(key_v, n, dv, c)
+    shuffle_keys = jr.split(perm_key, 2)
     perm1 = jr.permutation(shuffle_keys[0], n)
     perm2 = jr.permutation(shuffle_keys[1], n)
     x = x[perm1]

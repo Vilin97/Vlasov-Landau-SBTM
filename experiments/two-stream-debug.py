@@ -16,13 +16,13 @@ M = 100
 dt = 0.05
 gpu = 0
 fp32 = False
-dv = 2
+dv = 3
 final_time = 50.0
 alpha = 1/200
 k = 1/5
 c = 2.4
 C = 0.0            # collisionless
-seed = 46 # seed 46 gives a very shifted vortex. seed 42 works well.
+seed = 42 # seed 46 gives a very shifted vortex. seed 42 works well.
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
@@ -58,7 +58,6 @@ def init_two_stream_velocities(key_v, n, dv, c):
     v2 = -v1
     return jnp.vstack([v1, v2])
 
-key = jr.PRNGKey(seed)
 
 L = 2 * jnp.pi / k
 eta = L / M
@@ -70,6 +69,7 @@ def spatial_density(x):
 
 max_value = jnp.max(spatial_density(cells))
 
+key = jr.PRNGKey(seed)
 key_x, key_v, perm_key = jr.split(key, 3)
 domain = (0.0, L)
 x1 = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n//2) 
