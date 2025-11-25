@@ -29,7 +29,7 @@ def plot_U_quiver_pred(v, U, label, num_points=500, figsize=(5, 5)):
         U_plot[:, 0],
         U_plot[:, 1],
         alpha=0.8,
-        scale=5,
+        scale=1,
         angles="xy",
         scale_units="xy",
         label=label,
