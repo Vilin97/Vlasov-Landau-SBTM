@@ -28,6 +28,25 @@ def init_two_stream_velocities(key_v, n, dv, c):
     v2 = -v1
     return jnp.vstack([v1, v2])
 
+def vortex_location(x, v, nbins=50, min_count=10):
+    """Estimate the location x where Var[v|x] is maximized."""
+    x_min, x_max = jnp.min(x), jnp.max(x)
+    edges = jnp.linspace(x_min, x_max, nbins + 1)
+
+    idx = jnp.searchsorted(edges, x, side="right") - 1
+    idx = jnp.clip(idx, 0, nbins - 1)
+
+    counts = jnp.bincount(idx, length=nbins)
+    sum_v  = jnp.bincount(idx, weights=v,      length=nbins)
+    sum_v2 = jnp.bincount(idx, weights=v * v,  length=nbins)
+
+    mean_v = sum_v / jnp.maximum(counts, 1)
+    var_v  = sum_v2 / jnp.maximum(counts, 1) - mean_v ** 2
+    var_v  = jnp.where(counts >= min_count, var_v, -jnp.inf)
+
+    k = jnp.argmax(var_v)
+    x_star = 0.5 * (edges[k] + edges[k + 1])
+    return x_star, edges, var_v
 
 #------------------------------------------------------------------------------
 # Main
@@ -230,6 +249,9 @@ def main():
         else:
             entropy_production = 0.0
 
+        vl,_,_ = vortex_location(x, v[:, 0])
+        vl_shift = vl - L / 2
+
         electric_energy = jnp.sum(E ** 2) * eta # electric energy
         momentum = jnp.mean(v, axis=0)
         kinetic_energy = 0.5 * jnp.mean(jnp.sum(v ** 2, axis=1))
@@ -252,6 +274,7 @@ def main():
                     "kinetic_energy": float(kinetic_energy),
                     "total_energy": float(total_energy),
                     "entropy_production": float(entropy_production),
+                    "vortex_shift": float(vl_shift),
                     **mom_dict,
                 },
                 step=istep + 1,
