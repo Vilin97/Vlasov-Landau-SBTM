@@ -84,11 +84,11 @@ for seed in range(40,50):
 
     v = init_two_stream_velocities(key_v, n, dv, c)
 
-    # shuffle_keys = jr.split(perm_key, 2)
-    # perm1 = jr.permutation(shuffle_keys[0], n)
-    # perm2 = jr.permutation(shuffle_keys[1], n)
-    # x = x[perm1]
-    # v = v[perm2]
+    shuffle_keys = jr.split(perm_key, 2)
+    perm1 = jr.permutation(shuffle_keys[0], n)
+    perm2 = jr.permutation(shuffle_keys[1], n)
+    x = x[perm1]
+    v = v[perm2]
 
     rho = utils.evaluate_charge_density(x, cells, eta, w)
     E = jnp.cumsum(rho - 1) * eta
