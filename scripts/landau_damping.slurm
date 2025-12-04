@@ -5,28 +5,23 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10G
-#SBATCH --time=24:00:00
-#SBATCH --array=0-59
+#SBATCH --time=110:00:00
+#SBATCH --array=0-5
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
-DVS=(2 3)
-SCORE_METHODS=(kde sbtm)
-C_VALUES=(0.1 0.4 1.0)
-N_PARTICLES=(100000 200000 400000 600000 800000)
-M_VALUES=(10 25 40 60 80)
+DV=3
+C=0.4
+M=100
+N_VALUES=(500000 2000000 3000000)
+SCORE_METHODS=(sbtm kde)
 
 tid=$SLURM_ARRAY_TASK_ID
 
-idx_C=$(( tid % 3 ))
-idx_sm=$(( (tid / 3) % 2 ))
-idx_dv=$(( (tid / 6) % 2 ))
-idx_nm=$(( tid / 12 ))
+idx_sm=$(( tid % 2 ))
+idx_n=$(( tid / 2 ))
 
-dv=${DVS[$idx_dv]}
 score_method=${SCORE_METHODS[$idx_sm]}
-C=${C_VALUES[$idx_C]}
-n=${N_PARTICLES[$idx_nm]}
-M=${M_VALUES[$idx_nm]}
+n=${N_VALUES[$idx_n]}
 
 source /gscratch/amath/vilin/conda/etc/profile.d/conda.sh
 conda activate vlsbtm
@@ -35,8 +30,8 @@ srun python3 experiments/vlasov-landau-damping.py \
   --n "${n}" \
   --M "${M}" \
   --dt 0.02 \
-  --dv "${dv}" \
+  --dv "${DV}" \
   --C "${C}" \
   --score_method "${score_method}" \
   --wandb_project vlasov_landau_damping \
-  --wandb_run_name "n${n}_M${M}_dt0.02_dv${dv}_C${C}_${score_method}"
+  --wandb_run_name "n${n}_M${M}_dt0.02_dv${DV}_C${C}_${score_method}"

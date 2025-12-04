@@ -5,28 +5,24 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10G
-#SBATCH --time=24:00:00
-#SBATCH --array=0-59
+#SBATCH --time=110:00:00
+#SBATCH --array=0-5
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
-DVS=(2 3)
-SCORE_METHODS=(kde sbtm)
-C_VALUES=(0.08 0.16 0.32)
-N_PARTICLES=(100000 200000 400000 600000 800000)
-M_VALUES=(10 25 40 60 80)
+DVS=(3)
+SCORE_METHODS=(sbtm kde)
+NS=(500000 2000000 3000000)
+
+C=0.32
+M=100
 
 tid=$SLURM_ARRAY_TASK_ID
+idx_sm=$(( tid % 2 ))
+idx_n=$(( tid / 2 ))
 
-idx_C=$(( tid % 3 ))
-idx_sm=$(( (tid / 3) % 2 ))
-idx_dv=$(( (tid / 6) % 2 ))
-idx_nm=$(( tid / 12 ))
-
-dv=${DVS[$idx_dv]}
+dv=${DVS[0]}
 score_method=${SCORE_METHODS[$idx_sm]}
-C=${C_VALUES[$idx_C]}
-n=${N_PARTICLES[$idx_nm]}
-M=${M_VALUES[$idx_nm]}
+n=${NS[$idx_n]}
 
 source /gscratch/amath/vilin/conda/etc/profile.d/conda.sh
 conda activate vlsbtm
