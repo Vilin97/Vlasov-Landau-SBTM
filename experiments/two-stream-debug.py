@@ -100,9 +100,14 @@ def v_target(vv):
 fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
 plt.show()
 plt.close(fig_init)
+#%%
+# 1. fit GMM with two modes to initial x,v sample
+# 2. compute the score function of the fitted GMM
+# 3. Compute the MSE between the fitted score and the true score function
+# 4. make a quiver plot of the two score functions
 
+#%%
 final_steps = int(final_time / dt)
-
 snapshot_times = np.linspace(0.0, final_time, 6)
 snapshot_steps = set(int(round(T / dt)) for T in snapshot_times)
 

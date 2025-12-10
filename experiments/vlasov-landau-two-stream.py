@@ -90,14 +90,16 @@ def main():
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     jax.config.update("jax_enable_x64", not args.fp32)
+    gpu_name = jax.devices()[0].device_kind
 
     wandb_run = wandb.init(
         project=args.wandb_project,
         name=args.wandb_run_name,
         mode=args.wandb_mode,
-        config=vars(args),
+        config={**vars(args), "gpu_name": gpu_name},
     )
     print(f"Args: {args}")
+    print(f"GPU = {gpu_name}")
 
     seed = args.seed
     q = 1.0
