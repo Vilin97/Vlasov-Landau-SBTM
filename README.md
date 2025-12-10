@@ -1,6 +1,6 @@
 # Vlasov-Landau with Score-Based Transport Modeling (SBTM)
 
-We solve the Vlasov-Landau equations using a neural network-based method called Score-Based Transport Modeling (SBTM).
+We solve the Vlasov-Landau equations using a neural network-based method called Score-Based Transport Modeling (SBTM). We do experiments with Landau Damping and Two Stream Instability. SBTM performs better than the baselines.
 
 ## Installation
 
