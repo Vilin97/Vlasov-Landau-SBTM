@@ -13,7 +13,7 @@ import numpy as np
 
 from src import utils
 
-n = 10**6          # must be even
+n = 10**7          # must be even
 M = 100
 dt = 0.05
 gpu = 0
@@ -25,7 +25,7 @@ k = 1/5
 c = 2.4
 C = 0.0            # collisionless
 # seed = 43 # with dv=2 seed 46 gives a very shifted vortex. seed 42 works well.
-for seed in range(50):
+for seed in range(1):
     print(f"Using seed {seed}")
 
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -132,7 +132,7 @@ for seed in range(50):
     def v_target(vv):
         return 0.5 * (jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0))
 
-    fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
+    # fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
     plt.show()
     plt.close(fig_init)
 
@@ -148,9 +148,16 @@ for seed in range(50):
             v_traj.append(np.asarray(v.block_until_ready()))
             t_traj.append(istep * dt)
             vl,_,_ = vortex_location(x, v[:, 0])
-            print(f"Step {istep}, Time {istep*dt:.2f}, Vortex at x={vl:.4f}, Vortex shift = {vl - L/2:.4f}")
+            # print(f"Step {istep}, Time {istep*dt:.2f}, Vortex at x={vl:.4f}, Vortex shift = {vl - L/2:.4f}")
             # print(v.mean(axis=0))
             # print(E.mean())
+
+        # Verlet scheme
+        # x = jnp.mod(x + 0.5 * dt * v[:, 0], L)
+        # E_at_particles = utils.evaluate_field_at_particles(E, x, cells, eta)
+        # v = v.at[:, 0].add(dt * E_at_particles)
+        # x = jnp.mod(x + 0.5 * dt * v[:, 0], L)
+        # E = utils.update_electric_field(E, x, v, cells, eta, w, dt)
 
         E_at_particles = utils.evaluate_field_at_particles(E, x, cells, eta)
         v = v.at[:, 0].add(dt * E_at_particles)
