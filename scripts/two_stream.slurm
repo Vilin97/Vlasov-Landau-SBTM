@@ -1,19 +1,19 @@
 #!/bin/bash
 #SBATCH --job-name=two_stream
 #SBATCH --account=amath
-#SBATCH --partition=gpu-rtx6k
+#SBATCH --partition=gpu-l40s
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=10G
-#SBATCH --time=110:00:00
+#SBATCH --mem=50G
+#SBATCH --time=3-00:00:00
 #SBATCH --array=0-5
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
 DVS=(3)
 SCORE_METHODS=(sbtm kde)
-NS=(500000 2000000 3000000)
+NS=(500000 1500000 3000000)
 
-C=0.32
+C=0.24
 M=100
 
 tid=$SLURM_ARRAY_TASK_ID
