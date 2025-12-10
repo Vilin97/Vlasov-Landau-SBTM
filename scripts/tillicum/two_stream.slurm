@@ -2,7 +2,7 @@
 #SBATCH --job-name=two_stream
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
-#SBATCH --time=72:00:00
+#SBATCH --time=24:00:00
 #SBATCH --array=0-0
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
@@ -20,7 +20,7 @@ score_method=${SCORE_METHODS[0]}
 n=${NS[0]}
 
 source /gpfs/projects/mathai/vilin/miniconda3/etc/profile.d/conda.sh
-conda activate cayley
+conda activate vlsbtm
 
 srun python3 experiments/vlasov-landau-two-stream.py \
   --n "$n" \

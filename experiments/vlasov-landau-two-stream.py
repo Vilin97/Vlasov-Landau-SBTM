@@ -1,8 +1,10 @@
 # Two-stream instability with CLI + wandb logging
 # Run with `python experiments/vlasov-landau-two-stream.py --n 1000_000 --M 100 --dt 0.05 --gpu 0 --dv 2 --final_time 50.0 --C 0.08 --alpha 1/200 --score_method kde --wandb_run_name "n1e6_M100_dt0.05_C0.08_kde"`
 
+import os, sys
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 import argparse
-import os
 import time
 
 import jax
@@ -95,6 +97,7 @@ def main():
         mode=args.wandb_mode,
         config=vars(args),
     )
+    print(f"Args: {args}")
 
     seed = args.seed
     q = 1.0
@@ -188,9 +191,6 @@ def main():
             return model(x_in, v_in)
     else:
         raise ValueError(f"Unknown score method: {score_method}")
-
-    print(f"Args: {args}")
-
 
     rho = utils.evaluate_charge_density(x, cells, eta, w)
     E = jnp.cumsum(rho - 1) * eta
