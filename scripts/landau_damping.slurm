@@ -12,7 +12,7 @@
 DV=3
 M=100
 N_VALUES=(500000 1000000 3000000)        # 3
-SCORE_METHODS=(sbtm kde)                # 2
+SCORE_METHODS=(sbtm blob)                # 2
 C_VALUES=(0 0.1 0.4 1)                  # 4
 
 tid=$SLURM_ARRAY_TASK_ID

@@ -1,5 +1,5 @@
 # Two-stream instability with CLI + wandb logging
-# Run with `python experiments/vlasov-landau-two-stream.py --n 1000_000 --M 100 --dt 0.05 --gpu 0 --dv 2 --final_time 50.0 --C 0.08 --alpha 1/200 --score_method kde --wandb_run_name "n1e6_M100_dt0.05_C0.08_kde"`
+# Run with `python experiments/vlasov-landau-two-stream.py --n 1000_000 --M 100 --dt 0.05 --gpu 0 --dv 2 --final_time 50.0 --C 0.08 --alpha 1/200 --score_method blob --wandb_run_name "n1e6_M100_dt0.05_C0.08_blob"`
 
 import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -104,7 +104,7 @@ def parse_args():
     p.add_argument("--alpha", type=float, default=1/200, help="Amplitude of initial density perturbation")
     p.add_argument("--k", type=float, default=1/5, help="Wave number k")
     p.add_argument("--c", type=float, default=2.4, help="Beam speed for two-stream")
-    p.add_argument("--score_method", type=str, default="scaled_kde", choices=["kde", "scaled_kde", "sbtm"])
+    p.add_argument("--score_method", type=str, default="scaled_blob", choices=["blob", "scaled_blob", "sbtm"])
     p.add_argument("--seed", type=int, default=42, help="Random seed for initialization")
 
     # sbtm-specific args
@@ -172,10 +172,10 @@ def main():
         mu = jnp.zeros(v_in.shape[1], v_in.dtype).at[0].set(c_in)
         return -v_in + r[:, None] * mu
 
-    if score_method == "kde":
-        score_fn = utils.score_kde
-    elif score_method == "scaled_kde":
-        score_fn = utils.scaled_score_kde
+    if score_method == "blob":
+        score_fn = utils.score_blob
+    elif score_method == "scaled_blob":
+        score_fn = utils.scaled_score_blob
     elif score_method == "sbtm":
         hidden_dims = (256, 256)
         training_config = {

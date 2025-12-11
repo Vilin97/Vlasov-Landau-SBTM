@@ -159,7 +159,7 @@ def _silverman_bandwidth(v, eps=1e-12):
         return sigma * n ** (-1.0 / (dv + 4.0))  # (dv,)
 
 @partial(jax.jit, static_argnames=['max_ppc'])
-def _score_kde_local_impl(x, v, cells, eta, eps=1e-12, hv=None, max_ppc=4096):
+def _score_blob_local_impl(x, v, cells, eta, eps=1e-12, hv=None, max_ppc=4096):
     if x.ndim == 2:
         x = x[:, 0]
     if hv is None:
@@ -273,8 +273,8 @@ def _score_kde_local_impl(x, v, cells, eta, eps=1e-12, hv=None, max_ppc=4096):
     jax.debug.print("max_ppc={max_ppc}, max_count={mc}", max_ppc=max_ppc, mc=jnp.max(counts))
     return (mu - v) * inv_hv2
 
-# this is ~11 times faster than score_kde_blocked with n=1e5 and M=50
-def score_kde(x, v, cells, eta, eps=1e-12, hv=None):
+# this is ~11 times faster than score_blob_blocked with n=1e5 and M=50
+def score_blob(x, v, cells, eta, eps=1e-12, hv=None):
     if hv is None:
         hv = _silverman_bandwidth(v, eps)
 
@@ -289,4 +289,4 @@ def score_kde(x, v, cells, eta, eps=1e-12, hv=None):
     m = max(1, max_count)
     max_ppc = ((m + 99) // 100) * 100  # next multiple of 100 >= m
 
-    return _score_kde_local_impl(x, v, cells, eta, eps, hv, max_ppc)
+    return _score_blob_local_impl(x, v, cells, eta, eps, hv, max_ppc)

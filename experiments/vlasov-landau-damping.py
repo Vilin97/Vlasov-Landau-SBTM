@@ -34,7 +34,7 @@ def parse_args():
     p.add_argument("--final_time", type=float, default=15.0, help="Final simulation time")
     p.add_argument("--C", type=float, default=0.1, help="Collision strength")
     p.add_argument("--alpha", type=float, default=0.1, help="Amplitude of initial density perturbation")
-    p.add_argument("--score_method", type=str, default="kde", choices=["kde", "scaled_kde", "sbtm"])
+    p.add_argument("--score_method", type=str, default="blob", choices=["blob", "scaled_blob", "sbtm"])
     p.add_argument("--seed", type=int, default=42, help="Random seed for initialization")
 
     # sbtm-specific args (used only if score_method == "sbtm")
@@ -103,10 +103,10 @@ def main():
     optimizer = None
     training_config = None
 
-    if score_method == "kde":
-        score_fn = utils.score_kde
-    elif score_method == "scaled_kde":
-        score_fn = utils.scaled_score_kde
+    if score_method == "blob":
+        score_fn = utils.score_blob
+    elif score_method == "scaled_blob":
+        score_fn = utils.scaled_score_blob
     elif score_method == "sbtm":
         hidden_dims = (256, 256)
         training_config = {

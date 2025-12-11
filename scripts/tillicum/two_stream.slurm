@@ -8,7 +8,7 @@
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
 DVS=(3)
-SCORE_METHODS=(kde)
+SCORE_METHODS=(blob)
 NS=(3000000)
 
 C=0.32

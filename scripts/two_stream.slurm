@@ -9,7 +9,7 @@
 #SBATCH --array=0-1
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
-SCORE_METHODS=(sbtm kde)
+SCORE_METHODS=(sbtm blob)
 
 n=1000000
 dv=3
