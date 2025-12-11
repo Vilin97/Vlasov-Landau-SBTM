@@ -20,6 +20,44 @@ import optax
 
 from src import path, utils, score_model
 
+def sample_x(key_x, n, M, alpha, k):
+        """stratified sampling in x"""
+        assert n % 2 == 0
+        L = 2 * jnp.pi / k
+        x_edges = jnp.linspace(0.0, L, M + 1)
+        widths = jnp.diff(x_edges)
+
+        # Analytic cell integrals of (1 + alpha cos(kx))
+        cell_integrals = widths + (alpha / k) * (
+            jnp.sin(k * x_edges[1:]) - jnp.sin(k * x_edges[:-1])
+        )
+
+        # Target counts per cell for half the particles
+        n_half = n // 2
+        counts_float = cell_integrals / jnp.sum(cell_integrals) * n_half
+        counts_floor = jnp.floor(counts_float).astype(jnp.int32)
+        remainder = int(n_half - jnp.sum(counts_floor))
+
+        frac = counts_float - counts_floor
+        idx_sorted = jnp.argsort(frac)
+        if remainder > 0:
+            top_idx = idx_sorted[-remainder:]
+            counts = counts_floor.at[top_idx].add(1)
+        else:
+            counts = counts_floor
+
+        # Vectorized uniform sampling inside each cell
+        cell_ids = jnp.repeat(jnp.arange(M, dtype=jnp.int32), counts)
+        key_u, _ = jr.split(key_x)
+        u = jr.uniform(key_u, (n_half,))
+
+        x_left = x_edges[:-1][cell_ids]
+        widths_cells = widths[cell_ids]
+        x_half = x_left + widths_cells * u
+
+        # Mirror to get the other half
+        x_full = jnp.concatenate([x_half, L - x_half])
+        return x_full
 
 def init_two_stream_velocities(key_v, n, dv, c):
     assert n % 2 == 0, "n must be even"
@@ -117,26 +155,11 @@ def main():
     C = args.C
     gamma = -dv
     dx = 1
-
-    def spatial_density(x):
-        return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
-    max_value = jnp.max(spatial_density(cells))
-    domain = (0.0, float(L))
-    
-    # symmetric initialization in x
     key = jr.PRNGKey(seed)
-    key_x, key_v, perm_key = jr.split(key, 3)
-    domain = (0.0, L)
-    x1 = utils.rejection_sample(key_x, spatial_density, domain, max_value=max_value, num_samples=n//2) 
-    x2 = L - x1 
-    x = jnp.concatenate([x1, x2])
+    key_x, key_v = jr.split(key, 2)
 
+    x = sample_x(key_x, n, M, alpha, k)
     v = init_two_stream_velocities(key_v, n, dv, c)
-    shuffle_keys = jr.split(perm_key, 2)
-    perm1 = jr.permutation(shuffle_keys[0], n)
-    perm2 = jr.permutation(shuffle_keys[1], n)
-    x = x[perm1]
-    v = v[perm2]
 
     score_method = args.score_method
     model = None
