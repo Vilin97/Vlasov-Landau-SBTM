@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=two_stream
+#SBATCH --account=naske
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
 #SBATCH --time=24:00:00
