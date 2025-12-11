@@ -119,7 +119,7 @@ def main():
         model = score_model.MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
         example_name = "landau_damping"
         model_path = os.path.join(
-            path.MODELS,
+            "data/models",
             f"{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
         )
         if os.path.exists(model_path):
@@ -279,7 +279,7 @@ def main():
         score_method=score_method,
     )
     snapshots_dir = os.path.join(
-        path.DATA,
+        "data",
         "snapshots",
         f"landau_damping_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}",
     )
