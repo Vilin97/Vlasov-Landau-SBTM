@@ -165,7 +165,7 @@ def main():
         model = score_model.MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
         example_name = "two_stream"
         model_path = os.path.join(
-            path.MODELS,
+            "data/score_models",
             f"{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}_c{c}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
         )
         if os.path.exists(model_path):
@@ -337,19 +337,22 @@ def main():
         score_method=score_method,
     )
     snapshots_dir = os.path.join(
-        path.DATA,
+        "data",
         "snapshots",
         f"two_stream_n{n:.0e}_M{M}_dt{dt}_{score_method}_dv{dv}_C{C}_alpha{alpha}_k{k}_c{c}",
     )
-    os.makedirs(snapshots_dir, exist_ok=True)
-    snapshots_raw_path = os.path.join(snapshots_dir, "snapshots_raw.npz")
-    np.savez_compressed(
-        snapshots_raw_path,
-        x_traj=np.array(x_traj, dtype=object),
-        v_traj=np.array(v_traj, dtype=object),
-        t_traj=np.array(t_traj),
-    )
-    snap_art.add_file(snapshots_raw_path)
+    try:
+        os.makedirs(snapshots_dir, exist_ok=True)
+        snapshots_raw_path = os.path.join(snapshots_dir, "snapshots_raw.npz")
+        np.savez_compressed(
+            snapshots_raw_path,
+            x_traj=np.array(x_traj, dtype=object),
+            v_traj=np.array(v_traj, dtype=object),
+            t_traj=np.array(t_traj),
+        )
+    except Exception as e:
+        print(f"Warning: could not save raw snapshots to {snapshots_raw_path}: {e}")
+        snap_art.add_file(snapshots_raw_path)
     wandb.log_artifact(snap_art)
 
     t_grid = jnp.linspace(0, final_time, num_steps + 2)
