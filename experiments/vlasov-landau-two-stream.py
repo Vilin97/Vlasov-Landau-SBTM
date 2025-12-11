@@ -222,6 +222,8 @@ def main():
 
     def v_target(vv):
         return 0.5 * (jax.scipy.stats.norm.pdf(vv, -c, 1.0) + jax.scipy.stats.norm.pdf(vv, c, 1.0))
+    def spatial_density(x):
+        return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
     fig_init = utils.visualize_initial(x, v[:, 0], cells, E, rho, eta, L, spatial_density, v_target)
     wandb.log({"initial_state": wandb.Image(fig_init)}, step=0)
     plt.show()
