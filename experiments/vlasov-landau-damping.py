@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument("--sbtm_num_epochs", type=int, default=10_000)
     p.add_argument("--sbtm_abs_tol", type=float, default=1e-4)
     p.add_argument("--sbtm_lr", type=float, default=2e-4)
-    p.add_argument("--sbtm_num_batch_steps", type=int, default=10)
+    p.add_argument("--sbtm_num_batch_steps", type=int, default=100)
 
     p.add_argument("--wandb_project", type=str, default="vlasov_landau_damping", help="wandb project name")
     p.add_argument("--wandb_run_name", type=str, default="landau_damping", help="wandb run name")
