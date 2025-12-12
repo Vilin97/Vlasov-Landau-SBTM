@@ -15,12 +15,23 @@ import optax
 # ------------------------------------------------------------------------------
 # Visualization utilities
 # ------------------------------------------------------------------------------
-def plot_U_quiver_pred(v, U, label, num_points=500, figsize=(5, 5)):
-    assert v.shape == U.shape
+def plot_U_quiver_pred(v, U, label, U_true=None, num_points=500, figsize=(5, 5)):
+    if U_true is None:
+        assert v.shape == U.shape
+    else:
+        assert v.shape == U.shape == U_true.shape
+
     n = v.shape[0]
     step_sub = max(1, n // num_points)
     v_plot = v[::step_sub]
     U_plot = U[::step_sub]
+    U_true_plot = None if U_true is None else U_true[::step_sub]
+
+    if U_true is None:
+        plot_label = label
+    else:
+        mse = float(jnp.mean((U - U_true) ** 2))
+        plot_label = f"{label} flow n={n:.0e} mse={mse:.5f}"
 
     fig_quiver = plt.figure(figsize=figsize)
     plt.quiver(
@@ -28,12 +39,28 @@ def plot_U_quiver_pred(v, U, label, num_points=500, figsize=(5, 5)):
         v_plot[:, 1],
         U_plot[:, 0],
         U_plot[:, 1],
+        color="tab:blue",
         alpha=0.8,
         scale=1,
         angles="xy",
         scale_units="xy",
-        label=label,
+        label=plot_label,
     )
+
+    if U_true is not None:
+        plt.quiver(
+            v_plot[:, 0],
+            v_plot[:, 1],
+            U_true_plot[:, 0],
+            U_true_plot[:, 1],
+            color="tab:red",
+            alpha=0.5,
+            scale=1,
+            angles="xy",
+            scale_units="xy",
+            label="Reference flow",
+        )
+
     plt.scatter(v_plot[:, 0], v_plot[:, 1], s=2, alpha=0.3)
     plt.axis("equal")
     plt.xlabel("v1")
