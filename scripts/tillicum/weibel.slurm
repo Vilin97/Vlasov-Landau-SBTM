@@ -3,7 +3,7 @@
 #SBATCH --account=naske
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --array=0-3
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
