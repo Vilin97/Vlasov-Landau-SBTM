@@ -15,7 +15,7 @@ import optax
 # ------------------------------------------------------------------------------
 # Visualization utilities
 # ------------------------------------------------------------------------------
-def plot_U_quiver_pred(v, U, label, U_true=None, num_points=500, figsize=(5, 5)):
+def plot_U_quiver_pred(v, U, label, U_true=None, num_points=500, figsize=(5, 5), scale=1):
     if U_true is None:
         assert v.shape == U.shape
     else:
@@ -39,9 +39,9 @@ def plot_U_quiver_pred(v, U, label, U_true=None, num_points=500, figsize=(5, 5))
         v_plot[:, 1],
         U_plot[:, 0],
         U_plot[:, 1],
-        color="tab:blue",
+        # color="tab:blue",
         alpha=0.8,
-        scale=1,
+        scale=scale,
         angles="xy",
         scale_units="xy",
         label=plot_label,
@@ -55,7 +55,7 @@ def plot_U_quiver_pred(v, U, label, U_true=None, num_points=500, figsize=(5, 5))
             U_true_plot[:, 1],
             color="tab:red",
             alpha=0.5,
-            scale=1,
+            scale=scale,
             angles="xy",
             scale_units="xy",
             label="Reference flow",
@@ -70,7 +70,7 @@ def plot_U_quiver_pred(v, U, label, U_true=None, num_points=500, figsize=(5, 5))
     plt.tight_layout()
     return fig_quiver
 
-def plot_score_quiver_pred(v, score, label, num_points=500, figsize=(5, 5)):
+def plot_score_quiver_pred(v, score, label, num_points=500, figsize=(5, 5), scale=5):
     assert v.shape == score.shape
     n = v.shape[0]
     step_sub = max(1, n // num_points)
@@ -84,7 +84,7 @@ def plot_score_quiver_pred(v, score, label, num_points=500, figsize=(5, 5)):
         score_plot[:, 0],
         score_plot[:, 1],
         alpha=0.8,
-        scale=5,
+        scale=scale,
         angles="xy",
         scale_units="xy",
         label=label,
@@ -98,7 +98,7 @@ def plot_score_quiver_pred(v, score, label, num_points=500, figsize=(5, 5)):
     plt.tight_layout()
     return fig_quiver
 
-def plot_score_quiver(v, score, score_true, label, num_points=500, figsize=(5, 5)):
+def plot_score_quiver(v, score, score_true, label, num_points=500, figsize=(5, 5), scale=5):
     assert v.shape == score.shape == score_true.shape
     n = v.shape[0]
     step_sub = max(1, n // num_points)
@@ -114,7 +114,7 @@ def plot_score_quiver(v, score, score_true, label, num_points=500, figsize=(5, 5
         score_plot[:, 1],
         color="tab:blue",
         alpha=0.8,
-        scale=5,
+        scale=scale,
         angles="xy",
         scale_units="xy",
         label=f"{label} score n={n:.0e} mse={float(jnp.mean((score - score_true)**2)):.5f}",
@@ -126,7 +126,7 @@ def plot_score_quiver(v, score, score_true, label, num_points=500, figsize=(5, 5
         score_true_plot[:, 1],
         color="tab:red",
         alpha=0.5,
-        scale=5,
+        scale=scale,
         angles="xy",
         scale_units="xy",
         label="Reference score",
@@ -600,12 +600,14 @@ def score_step(model, optimizer, batch, key):
     optimizer.update(grads)
     return loss_val
 
-def train_initial_model(model, x, v, score, batch_size, num_epochs, abs_tol, lr, verbose=False):
+def train_initial_model(model, x, v, score, batch_size, num_epochs, abs_tol, lr, verbose=False, print_every=10):
     optimizer = nnx.Optimizer(model, optax.adamw(lr))
     n = x.shape[0]
+    full_loss_hist = []
     for epoch in range(num_epochs):
         full_loss = mse_loss(model, (x, v, score))
-        if verbose:
+        full_loss_hist.append(full_loss)
+        if verbose and epoch % print_every == 0:
             print(f"Epoch {epoch}: loss = {full_loss:.5f}")
         if full_loss < abs_tol:
             if verbose:
@@ -621,6 +623,7 @@ def train_initial_model(model, x, v, score, batch_size, num_epochs, abs_tol, lr,
                 s_sh[i:i+batch_size],
             )
             supervised_step(model, optimizer, batch)
+    return full_loss_hist
 
 def train_score_model(model, optimizer, x, v, key, batch_size, num_batch_steps):
     n = x.shape[0]

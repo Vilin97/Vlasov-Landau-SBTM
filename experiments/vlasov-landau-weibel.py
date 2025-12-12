@@ -22,6 +22,8 @@ import optax
 
 from src import utils, score_model
 
+import matplotlib as mpl
+mpl.rcParams['figure.dpi'] = 400
 
 def sample_x_uniform(key_x, n, L):
     return jr.uniform(key_x, (n,), minval=0.0, maxval=L)
@@ -203,20 +205,22 @@ def parse_args():
     p.add_argument(
         "--score_method",
         type=str,
-        default="scaled_blob",
-        choices=["blob", "scaled_blob", "sbtm"],
+        default="blob",
+        choices=["blob", "sbtm"],
     )
     p.add_argument("--sbtm_batch_size", type=int, default=20_000)
-    p.add_argument("--sbtm_num_epochs", type=int, default=10_000)
+    p.add_argument("--sbtm_num_epochs", type=int, default=40_000)
     p.add_argument("--sbtm_abs_tol", type=float, default=1e-4)
     p.add_argument("--sbtm_lr", type=float, default=2e-4)
     p.add_argument("--sbtm_num_batch_steps", type=int, default=100)
 
-    p.add_argument("--wandb_project", type=str, default="weibel_1d_dv")
+    p.add_argument("--wandb_project", type=str, default="weibel")
     p.add_argument("--wandb_run_name", type=str, default="weibel")
     p.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
-    p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--log_every", type=int, default=1)
     p.add_argument("--num_snapshots", type=int, default=6)
+    p.add_argument("--quiver_score_scale", type=float, default=500)
+    p.add_argument("--quiver_flow_scale", type=float, default=1000)
     return p.parse_args()
 
 
@@ -271,7 +275,7 @@ def main():
     elif score_method == "scaled_blob":
         score_fn = utils.scaled_score_blob
     elif score_method == "sbtm":
-        hidden_dims = (256, 256)
+        hidden_dims = (512, 512)
         training_config = {
             "batch_size": args.sbtm_batch_size,
             "num_epochs": args.sbtm_num_epochs,
@@ -283,7 +287,7 @@ def main():
         example_name = "weibel"
         model_path = os.path.join(
             "data/score_models",
-            f"{example_name}_dx{dx}_dv{dv}_beta{beta}_k{k}_c{c}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
+            f"{example_name}_dx{dx}_dv{dv}_beta{beta}_k{k}_c{c}_n{n}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
         )
         if os.path.exists(model_path):
             model.load(model_path)
@@ -337,14 +341,14 @@ def main():
         s_plot = score_fn(x, v, cells, eta)
     s_true = weibel_score_v(v, beta, c)
 
-    fig_quiver = utils.plot_score_quiver(v, s_plot, s_true, label=score_method)
+    fig_quiver = utils.plot_score_quiver(v, s_plot, s_true, label=score_method, scale=args.quiver_score_scale)
     wandb.log({"score_quiver": wandb.Image(fig_quiver)}, step=0)
     plt.close(fig_quiver)
 
     Q0_pred = utils.collision(x, v, s_plot, eta, gamma, L, w)
     Q0_true = utils.collision(x, v, s_true, eta, gamma, L, w)
 
-    fig_flow0 = utils.plot_U_quiver_pred(v, -Q0_pred, label=f"{score_method}, t=0.0", U_true=-Q0_true)
+    fig_flow0 = utils.plot_U_quiver_pred(v, -Q0_pred, label=f"{score_method}, t=0.0", U_true=-Q0_true, scale=args.quiver_flow_scale)
     wandb.log({"flow_quiver": wandb.Image(fig_flow0)}, step=0)
     plt.close(fig_flow0)
 
@@ -373,13 +377,13 @@ def main():
             Q_snap = utils.collision(x, v, s_snap, eta, gamma, L, w)
 
             fig_quiver_score_snap = utils.plot_score_quiver_pred(
-                v, s_snap, label=f"{score_method}, t={istep * dt:.2f}"
+                v, s_snap, label=f"{score_method}, t={istep * dt:.2f}", scale=args.quiver_score_scale
             )
             wandb.log({"score_quiver": wandb.Image(fig_quiver_score_snap)}, step=istep + 1)
             plt.close(fig_quiver_score_snap)
 
             fig_quiver_flow_snap = utils.plot_U_quiver_pred(
-                v, -Q_snap, label=f"{score_method}, t={istep * dt:.2f}"
+                v, -Q_snap, label=f"{score_method}, t={istep * dt:.2f}", scale=args.quiver_flow_scale
             )
             wandb.log({"flow_quiver": wandb.Image(fig_quiver_flow_snap)}, step=istep + 1)
             plt.close(fig_quiver_flow_snap)
