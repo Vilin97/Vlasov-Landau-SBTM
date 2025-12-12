@@ -1,119 +1,132 @@
-#%% imports
+#%%
+
 import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-
-import time
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from tqdm import tqdm
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import numpy as np
-
+import math
+from tqdm import tqdm
 from src import utils
 
-# ----------------- params -----------------
-n = 10**6          # must be even
+@jax.jit
+def deposit_currents(x, v, cells, eta, w):
+    """J1,J2 on grid from particles (linear-hat, periodic)."""
+    M = cells.size
+    idx_f = x / eta - 0.5
+    i0 = jnp.floor(idx_f).astype(jnp.int32) % M
+    i1 = (i0 + 1) % M
+    f = idx_f - jnp.floor(idx_f)
+    w0, w1 = 1.0 - f, f
+
+    J1 = (
+        jnp.zeros(M)
+        .at[i0].add(w0 * v[:, 0])
+        .at[i1].add(w1 * v[:, 0])
+    )
+    J2 = (
+        jnp.zeros(M)
+        .at[i0].add(w0 * v[:, 1])
+        .at[i1].add(w1 * v[:, 1])
+    )
+    scale = w / eta
+    return scale * J1, scale * J2
+
+@jax.jit
+def maxwell_step(E2, B3, J2, eta, dt):
+    """1D Maxwell for transverse fields."""
+    dE2dx = (jnp.roll(E2, -1) - jnp.roll(E2, 1)) / (2.0 * eta)
+    B3 = B3 - dt * dE2dx
+    dB3dx = (jnp.roll(B3, -1) - jnp.roll(B3, 1)) / (2.0 * eta)
+    E2 = E2 - dt * (J2 + dB3dx)
+    return E2, B3
+
+
+# ---------- parameters from paper ----------
+n = 10**6
 M = 100
-dt = 0.05
+dt = 0.1
+final_time = 125
 gpu = 0
 fp32 = False
-dv = 2            # 1d-2v for Weibel
-final_time = 50.0
-alpha = 0.0       # uniform in x
-k = 1/5
-c = 2.4           # beam shift in v_y
-C = 0.0           # collisionless
+dv = 3
+beta = 1e-2
+c = 0.3
+k = 1.0 / 5.0
+alpha_B = 1e-3       # B3 amplitude
 seed = 43
-print(f"Using seed {seed}")
+
+print(f"dv={dv}, n={n}, M={M}, dt={dt}, T={final_time}")
+assert dv in (2, 3)
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
 jax.config.update("jax_enable_x64", not fp32)
 
-# ----------------- helpers -----------------
-def vortex_location(x, v, nbins=200, min_count=10):
-    x_min, x_max = jnp.min(x), jnp.max(x)
-    edges = jnp.linspace(x_min, x_max, nbins + 1)
-    idx = jnp.searchsorted(edges, x, side="right") - 1
-    idx = jnp.clip(idx, 0, nbins - 1)
-    counts = jnp.bincount(idx, length=nbins)
-    sum_v  = jnp.bincount(idx, weights=v,      length=nbins)
-    sum_v2 = jnp.bincount(idx, weights=v * v,  length=nbins)
-    mean_v = sum_v / jnp.maximum(counts, 1)
-    var_v  = sum_v2 / jnp.maximum(counts, 1) - mean_v ** 2
-    var_v  = jnp.where(counts >= min_count, var_v, -jnp.inf)
-    k = jnp.argmax(var_v)
-    x_star = 0.5 * (edges[k] + edges[k + 1])
-    return x_star, edges, var_v
+# ---------- helpers ----------
+def sample_x_uniform(key_x, n, L):
+    return jr.uniform(key_x, (n,), minval=0.0, maxval=L)
 
-def init_weibel_velocities(key_v, n, c, vth_par=1.0, vth_perp=1.0):
+def init_weibel_velocities(key_v, n, dv, beta, c):
+    """f0(v1,v2) ∝ exp(-v1^2/β)[exp(-(v2-c)^2/β)+exp(-(v2+c)^2/β)]."""
     assert n % 2 == 0
     n_half = n // 2
-    k1, k2, k3 = jr.split(key_v, 3)
-    vx = jr.normal(k1, (n,)) * vth_par
-    vy1 = jr.normal(k2, (n_half,)) * vth_perp + c
-    vy2 = jr.normal(k3, (n_half,)) * vth_perp - c
-    vy = jnp.concatenate([vy1, vy2])
-    v = jnp.stack([vx, vy], axis=1)
-    v = v - jnp.mean(v, axis=0)
-    return v
+    sigma = jnp.sqrt(beta / 2.0)
 
-def sample_x(key_x, n, M, alpha, k):
-    assert n % 2 == 0
-    L = 2 * jnp.pi / k
-    if alpha == 0.0:
-        return jr.uniform(key_x, (n,), minval=0.0, maxval=L)
+    k1, k2, k3, k4 = jr.split(key_v, 4)
+    v1 = jr.normal(k1, (n,)) * sigma
 
-    x_edges = jnp.linspace(0.0, L, M + 1)
-    widths = jnp.diff(x_edges)
-    cell_integrals = widths + (alpha / k) * (
-        jnp.sin(k * x_edges[1:]) - jnp.sin(k * x_edges[:-1])
-    )
-    n_half = n // 2
-    counts_float = cell_integrals / jnp.sum(cell_integrals) * n_half
-    counts_floor = jnp.floor(counts_float).astype(jnp.int32)
-    remainder = int(n_half - jnp.sum(counts_floor))
-    frac = counts_float - counts_floor
-    idx_sorted = jnp.argsort(frac)
-    counts = jnp.where(
-        jnp.isin(jnp.arange(M), idx_sorted[-remainder:]),
-        counts_floor + 1,
-        counts_floor,
-    )
-    cell_ids = jnp.repeat(jnp.arange(M, dtype=jnp.int32), counts)
-    key_u, _ = jr.split(key_x)
-    u = jr.uniform(key_u, (n_half,))
-    x_left = x_edges[:-1][cell_ids]
-    widths_cells = widths[cell_ids]
-    x_half = x_left + widths_cells * u
-    x_full = jnp.concatenate([x_half, L - x_half])
-    return x_full
+    v2_1 = jr.normal(k2, (n_half,)) * sigma + c
+    v2_2 = jr.normal(k3, (n_half,)) * sigma - c
+    v2 = jnp.concatenate([v2_1, v2_2])
 
-def v_target(vv):
-    return 0.5 * (
-        jax.scipy.stats.norm.pdf(vv, -c, 1.0)
-        + jax.scipy.stats.norm.pdf(vv, c, 1.0)
-    )
+    if dv == 2:
+        v = jnp.stack([v1, v2], axis=1)
+    else:
+        v3 = jr.normal(k4, (n,)) * sigma
+        v = jnp.stack([v1, v2, v3], axis=1)
 
-# ----------------- domain, init -----------------
-L = 2 * jnp.pi / k
+    return v - jnp.mean(v, axis=0)  # zero net momentum
+
+def lorentz_force(E1_p, E2_p, B3_p, v, dv):
+    if dv == 2:
+        vx, vy = v[:, 0], v[:, 1]
+        Fx = E1_p + vy * B3_p
+        Fy = E2_p - vx * B3_p
+        return jnp.stack([Fx, Fy], axis=1)
+    else:
+        E_p = jnp.stack([E1_p, E2_p, jnp.zeros_like(E1_p)], axis=1)
+        B_p = jnp.stack([
+            jnp.zeros_like(B3_p),
+            jnp.zeros_like(B3_p),
+            B3_p,
+        ], axis=1)
+        return E_p + jnp.cross(v, B_p)
+
+# ---------- domain and init ----------
+L = 2.0 * jnp.pi / k          # x ∈ (0, 2π/k)
 eta = L / M
 cells = (jnp.arange(M) + 0.5) * eta
 w = L / n
 
 key = jr.PRNGKey(seed)
-key_x, key_v, _ = jr.split(key, 3)
+key_x, key_v = jr.split(key, 2)
 
-x = sample_x(key_x, n, M, alpha, k)
-v = init_weibel_velocities(key_v, n, c)
+x = sample_x_uniform(key_x, n, L)
+v = init_weibel_velocities(key_v, n, dv, beta, c)
 
-rho = utils.evaluate_charge_density(x, cells, eta, w)
-E1 = jnp.cumsum(rho - 1) * eta    # longitudinal E
-E2 = jnp.zeros_like(E1)           # transverse E_y
-B3 = 1e-3 * jnp.sin(k * cells)    # small initial B_z
+# electric field initialised self-consistently to zero
+E1 = jnp.zeros(M)
+E2 = jnp.zeros(M)
 
+# B3(0,x) = α sin(kx)
+B3 = alpha_B * jnp.sin(k * cells)
+
+# ---------- time loop ----------
 final_steps = int(final_time / dt)
 snapshot_times = np.linspace(0.0, final_time, 6)
 snapshot_steps = set(int(round(T / dt)) for T in snapshot_times)
@@ -124,34 +137,87 @@ for istep in tqdm(range(final_steps + 1)):
         x_traj.append(np.asarray(x.block_until_ready()))
         v_traj.append(np.asarray(v.block_until_ready()))
         t_traj.append(istep * dt)
-        vl, _, _ = vortex_location(x, v[:, 0])
-        # print(f"Step {istep}, Time {istep*dt:.2f}, vortex x ~ {vl:.4f}")
 
-    # fields at particles
     E1_p = utils.evaluate_field_at_particles(E1, x, cells, eta)
     E2_p = utils.evaluate_field_at_particles(E2, x, cells, eta)
     B3_p = utils.evaluate_field_at_particles(B3, x, cells, eta)
 
-    # Lorentz force (q = 1, c = 1), v = (vx, vy, 0), B = (0, 0, B3)
-    vx, vy = v[:, 0], v[:, 1]
-    Fx = E1_p + vy * B3_p
-    Fy = E2_p - vx * B3_p
-
-    v = v.at[:, 0].add(dt * Fx)
-    v = v.at[:, 1].add(dt * Fy)
-
+    F = lorentz_force(E1_p, E2_p, B3_p, v, dv)
+    v = v + dt * F
     x = jnp.mod(x + dt * v[:, 0], L)
 
-    # update E1 using existing electrostatic Ampere-like update
+    # longitudinal field from J1 (same PIC machinery)
     E1 = utils.update_electric_field(E1, x, v, cells, eta, w, dt)
 
-    # deposit transverse current and update (E2,B3)
-    J1, J2 = utils.deposit_currents(x, v, cells, eta, w)
-    E2, B3 = utils.maxwell_step(E2, B3, J2, eta, dt)
+    # transverse fields from J2
+    _, J2 = deposit_currents(x, v, cells, eta, w)
+    E2, B3 = maxwell_step(E2, B3, J2, eta, dt)
 
-title = fr"Weibel 1d-2v α={alpha}, k={k}, c={c}, C=0, n={n:.0e}, M={M}, dt={dt}"
-fig_ps, _ = utils.plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, save=False)
-plt.show()
-plt.close(fig_ps)
+# %%
+def plot(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt):
+    title = fr"Weibel 1D-{dv}V, β={beta}, c={c}, k={k}, α={alpha_B}, n={n:.0e}, M={M}, dt={dt}"
+    num_snaps = len(x_traj)
+    k = int(math.sqrt(x_traj[0].shape[0] / 50))
+    bins = [max(20, k), max(20, k)]
 
+    cols = min(3, num_snaps)
+    rows = int(np.ceil(num_snaps / cols))
+
+    fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows),
+                            sharex=True, sharey=True)
+    axs = np.array(axs).reshape(-1)
+
+    v1_all = np.concatenate([np.asarray(v_snap)[:, 0] for v_snap in v_traj])
+    v2_all = np.concatenate([np.asarray(v_snap)[:, 1] for v_snap in v_traj])
+    v1min, v1max = -0.7, 0.7
+    v2min, v2max = -0.7, 0.7
+
+    last_img = None
+    for i, (x_snap, v_snap, t_snap) in enumerate(zip(x_traj, v_traj, t_traj)):
+        ax = axs[i]
+        v1s = np.asarray(v_snap)[:, 0]
+        v2s = np.asarray(v_snap)[:, 1]
+
+        H, xedges, yedges = np.histogram2d(
+            v1s, v2s,
+            bins=bins,
+            range=[[v1min, v1max], [v2min, v2max]],
+            density=True,
+        )
+
+        # Mark zero-density bins as NaN so they appear as “background”
+        H = np.where(H > 0, H, np.nan)
+
+        # Create a colormap with NaN → black
+        cmap = plt.cm.jet.copy()
+        cmap.set_bad(color="black")
+
+        img = ax.imshow(
+            H.T,
+            origin="lower",
+            extent=[v1min, v1max, v2min, v2max],
+            aspect="auto",
+            cmap=cmap,
+            norm=LogNorm(vmin=np.nanmin(H), vmax=np.nanmax(H)),
+        )
+        last_img = img
+
+        ax.set_title(f"t = {t_snap:.1f}")
+        ax.set_xlim(v1min, v1max)
+        ax.set_ylim(v2min, v2max)
+        ax.set_xlabel("v1")
+        ax.set_ylabel("v2")
+
+    for j in range(i + 1, len(axs)):
+        axs[j].axis("off")
+
+    if last_img is not None:
+        cbar = fig.colorbar(last_img, ax=axs.tolist(),
+                            orientation="vertical", fraction=0.02, pad=0.02)
+        cbar.set_label("Density")
+
+    plt.suptitle(title)
+    plt.show()
+
+plot(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt)
 # %%
