@@ -3,22 +3,25 @@
 #SBATCH --account=naske
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
-#SBATCH --time=1-00:00:00
-#SBATCH --array=0-7
+#SBATCH --time=12:00:00
+#SBATCH --array=0-0
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
 DV=3
 M=100
-N_VALUES=(1000000 3000000)        # 2
-SCORE_METHODS=(blob)              # 1
-C_VALUES=(0 0.1 0.4 1)            # 4
+ALPHA=0.1
+FINAL_TIME=15.0
+
+N_VALUES=(3000000)
+SCORE_METHODS=(blob)
+C_VALUES=(0.4)
 
 tid=$SLURM_ARRAY_TASK_ID
 
-idx_c=$(( tid % 4 ))
-rem=$(( tid / 4 ))
-idx_sm=$(( rem % 1 ))
-idx_n=$(( rem / 1 ))
+idx_c=0
+rem=0
+idx_sm=0
+idx_n=0
 
 C=${C_VALUES[$idx_c]}
 score_method=${SCORE_METHODS[$idx_sm]}
@@ -35,6 +38,6 @@ srun python3 experiments/vlasov-landau-damping.py \
   --C "$C" \
   --score_method "$score_method" \
   --wandb_project vlasov_landau_damping \
-  --wandb_run_name "alpha0.5_T50_n${n}_M${M}_dt0.02_dv${DV}_C${C}_${score_method}" \
-  --alpha 0.5 \
-  --final_time 50.0
+  --wandb_run_name "alpha${ALPHA}_T${FINAL_TIME}_n${n}_M${M}_dt0.02_dv${DV}_C${C}_${score_method}" \
+  --alpha "$ALPHA" \
+  --final_time "$FINAL_TIME"

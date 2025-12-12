@@ -2,8 +2,10 @@
 # Example:
 # python experiments/vlasov-landau-damping.py --n 1000_000 --M 100 --dt 0.02 --gpu 0 --dv 2 --final_time 15.0 --C 0.05 --alpha 0.1 --score_method sbtm --wandb_run_name "n1e6_M100_dt0.02_C0.05_sbtm"
 
+import os, sys
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 import argparse
-import os
 import time
 
 import jax
