@@ -119,8 +119,8 @@ def maxwell_step(E2, B3, J2, eta, dt):
     return E2, B3
 
 
-def plot_weibel(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt):
-    title = fr"Weibel 1D-{dv}V, β={beta}, c={c}, k={k}, α={alpha_B}, n={n:.0e}, M={M}, dt={dt}"
+def plot_weibel(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt, C, score_method):
+    title = fr"Weibel 1D-{dv}V, β={beta}, c={c}, k={k}, α={alpha_B}, n={n:.0e}, M={M}, dt={dt}, C={C}, score_method={score_method}"
     num_snaps = len(x_traj)
     k_est = int(math.sqrt(x_traj[0].shape[0] / 50))
     bins = [max(20, k_est), max(20, k_est)]
@@ -451,7 +451,7 @@ def main():
                 step=istep + 1,
             )
 
-    fig_ps = plot_weibel(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt)
+    fig_ps = plot_weibel(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt, C, score_method)
     wandb.log({"phase_space_snapshots": wandb.Image(fig_ps)}, step=final_steps + 1)
     plt.close(fig_ps)
 
