@@ -6,24 +6,21 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=100G
 #SBATCH --time=1-00:00:00
-#SBATCH --array=0-23
+#SBATCH --array=0-3
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
-DVS=(2 3)                                   # 2
-NS=(500000 1000000)                         # 2
-CS=(0 0.0001 0.0002 0.0004 0.0008 0.0016)   # 6
+DVS=(2 3)                    # 2
+NS=(500000 1000000)          # 2
+C=0.0001                     # fixed
 SCORE_METHOD=sbtm
 
 tid=$SLURM_ARRAY_TASK_ID
 
-idx_c=$(( tid % 6 ))
-rem=$(( tid / 6 ))
-idx_n=$(( rem % 2 ))
-idx_dv=$(( rem / 2 ))
+idx_dv=$(( tid % 2 ))
+idx_n=$(( tid / 2 ))
 
 dv=${DVS[$idx_dv]}
 n=${NS[$idx_n]}
-C=${CS[$idx_c]}
 
 M=100
 dt=0.1
@@ -39,4 +36,4 @@ srun python3 experiments/vlasov-landau-weibel.py \
   --C "$C" \
   --score_method "$SCORE_METHOD" \
   --wandb_project weibel \
-  --wandb_run_name "n${n}_M${M}_dt${dt}_dv${dv}_C${C}_${SCORE_METHOD}"
+  --wandb_run_name "n${n}_dv${dv}_C${C}_${SCORE_METHOD}"

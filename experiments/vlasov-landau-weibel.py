@@ -285,10 +285,11 @@ def main():
         }
         model = score_model.MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
         example_name = "weibel"
-        model_path = os.path.join(
+        model_path = os.path.abspath(os.path.join(
             "data/score_models",
             f"{example_name}_dx{dx}_dv{dv}_beta{beta}_k{k}_c{c}_n{n}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
-        )
+        ))
+
         if os.path.exists(model_path):
             model.load(model_path)
         else:
@@ -303,10 +304,8 @@ def main():
                 lr=training_config["lr"],
                 verbose=True,
             )
-            try:
-                model.save(model_path)
-            except Exception as e:
-                print(f"Warning: could not save model to {model_path}: {e}")
+            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+            model.save(model_path)
             time.sleep(1)
         optimizer = nnx.Optimizer(model, optax.adamw(training_config["lr"]))
 

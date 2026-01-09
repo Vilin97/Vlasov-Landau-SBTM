@@ -187,10 +187,10 @@ def main():
         }
         model = score_model.MLPScoreModel(dx, dv, hidden_dims=hidden_dims)
         example_name = "two_stream"
-        model_path = os.path.join(
+        model_path = os.path.abspath(os.path.join(
             "data/score_models",
             f"{example_name}_dx{dx}_dv{dv}_alpha{alpha}_k{k}_c{c}/hidden_{str(hidden_dims)}/epochs_{training_config['num_epochs']}",
-        )
+        ))
         if os.path.exists(model_path):
             model.load(model_path)
         else:
