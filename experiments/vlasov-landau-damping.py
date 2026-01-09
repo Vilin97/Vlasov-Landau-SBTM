@@ -60,12 +60,15 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     jax.config.update("jax_enable_x64", not args.fp32)
 
+    gpu_name = jax.devices()[0].device_kind
     wandb_run = wandb.init(
         project=args.wandb_project,
         name=args.wandb_run_name,
         mode=args.wandb_mode,
-        config=vars(args),
+        config={**vars(args), "gpu_name": gpu_name},
     )
+    print(f"Args: {args}")
+    print(f"GPU = {gpu_name}")
 
     # Parameters
     seed = args.seed
@@ -87,8 +90,6 @@ def main():
     key_v, key_x = jr.split(jr.PRNGKey(seed), 2)
     v = jr.normal(key_v, (n, dv))
     v = v - jnp.mean(v, axis=0)
-
-    print(f"Args: {args}")
 
     def spatial_density(x):
         return (1 + alpha * jnp.cos(k * x)) / (2 * jnp.pi / k)
