@@ -4,23 +4,19 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
 #SBATCH --time=1-00:00:00
-#SBATCH --array=0-3
+#SBATCH --array=0-1
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
 DVS=(3)
 NS=(3000000)
-SCORE_METHODS=(blob sbtm)     # 2
-CS=(0.0008 0.0016)            # 2
+CS=(0.0008 0.0016)   # 2 values, sbtm only
 
 tid=$SLURM_ARRAY_TASK_ID
 
-idx_sm=$(( tid % 2 ))
-idx_c=$(( tid / 2 ))
-
 dv=${DVS[0]}
 n=${NS[0]}
-score_method=${SCORE_METHODS[$idx_sm]}
-C=${CS[$idx_c]}
+C=${CS[$tid]}
+score_method=sbtm
 
 M=100
 dt=0.1
