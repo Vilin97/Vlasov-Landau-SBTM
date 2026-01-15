@@ -299,6 +299,10 @@ def main():
 
     # Post-processing: Landau damping fit
     t_grid = jnp.linspace(0, final_time, num_steps + 2)
+    
+    # Limit theoretical predictions to t=15
+    t_theory_max = 15.0
+    t_grid_theory = jnp.linspace(0, min(t_theory_max, final_time), int(min(t_theory_max, final_time) / dt) + 2)
 
     fig_final = plt.figure(figsize=(6, 4))
     plt.plot(t_grid, E_L2, marker="o", ms=1, label=f"Simulation (C={C})")
@@ -306,21 +310,21 @@ def main():
     prefactor = -1 / (k ** 3) * jnp.sqrt(jnp.pi / 8) * jnp.exp(
         -1 / (2 * k**2) - 1.5
     )
-    pred = jnp.exp(t_grid * prefactor)
+    pred = jnp.exp(t_grid_theory * prefactor)
     pred *= E_L2[0] / pred[0]
     plt.plot(
-        t_grid,
+        t_grid_theory,
         pred,
         "k-.",
         label=fr"collisionless: $e^{{\beta t}}, \beta={float(prefactor):.3f}$",
     )
 
     prefactor_collisional = prefactor - C * jnp.sqrt(2 / (9 * jnp.pi))
-    predicted_collisional = jnp.exp(t_grid * prefactor_collisional)
+    predicted_collisional = jnp.exp(t_grid_theory * prefactor_collisional)
     predicted_collisional *= E_L2[0] / predicted_collisional[0]
     if C > 0:
         plt.plot(
-            t_grid,
+            t_grid_theory,
             predicted_collisional,
             "r--",
             label=fr"collisional: $e^{{\beta t}},\ \beta = {float(prefactor_collisional):.3f}$",
@@ -328,7 +332,7 @@ def main():
 
     t_np = np.asarray(t_grid)
     E_np = np.asarray(E_L2)
-    mask = (t_np > 0.2) & (t_np < final_time)
+    mask = (t_np > 0.2) & (t_np < min(t_theory_max, final_time))
     t_mask = t_np[mask]
     E_mask = E_np[mask]
     max_idx = argrelextrema(E_mask, np.greater, order=20)[0]
