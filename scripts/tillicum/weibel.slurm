@@ -4,12 +4,12 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
 #SBATCH --time=1-00:00:00
-#SBATCH --array=0-1
+#SBATCH --array=0
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
 DVS=(3)
 NS=(3000000)
-CS=(0.0008 0.0016)   # 2 values, sbtm only
+CS=(0.0016)   # 1 value, sbtm only
 
 tid=$SLURM_ARRAY_TASK_ID
 
