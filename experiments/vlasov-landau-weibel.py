@@ -304,9 +304,12 @@ def main():
                 lr=training_config["lr"],
                 verbose=True,
             )
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            model.save(model_path)
-            time.sleep(1)
+            try:
+                os.makedirs(os.path.dirname(model_path), exist_ok=True)
+                model.save(model_path)
+                time.sleep(1)
+            except Exception as e:
+                print(f"Warning: could not save model to {model_path}: {e}")
         optimizer = nnx.Optimizer(model, optax.adamw(training_config["lr"]))
 
         def score_fn(x_in, v_in, cells_in, eta_in):
