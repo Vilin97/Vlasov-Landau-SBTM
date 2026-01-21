@@ -424,11 +424,13 @@ def main():
         _, J2 = deposit_currents(x, v, cells, eta, w)
         E2, B3 = maxwell_step(E2, B3, J2, eta, dt)
 
-        kinetic_energy = 0.5 * jnp.mean(jnp.sum(v**2, axis=1))
+        K1_energy = 0.5 * jnp.mean(v[:, 0]**2) * L
+        K2_energy = 0.5 * jnp.mean(v[:, 1]**2) * L
+        kinetic_energy = 0.5 * jnp.mean(jnp.sum(v**2, axis=1)) * L
         E1_energy = 0.5 * jnp.sum(E1**2) * eta
         E2_energy = 0.5 * jnp.sum(E2**2) * eta
-        magnetic_energy = 0.5 * jnp.sum(B3**2) * eta
         electric_energy = E1_energy + E2_energy
+        magnetic_energy = 0.5 * jnp.sum(B3**2) * eta
         total_energy = kinetic_energy + electric_energy + magnetic_energy
 
         E_L2 = jnp.sqrt(jnp.sum(E1**2 + E2**2) * eta)
@@ -442,6 +444,8 @@ def main():
                     "time": float((istep + 1) * dt),
                     "steps_per_sec": steps_per_sec,
                     "E_L2": float(E_L2),
+                    "K1_energy": float(K1_energy),
+                    "K2_energy": float(K2_energy),
                     "kinetic_energy": float(kinetic_energy),
                     "E1_energy": float(E1_energy),
                     "E2_energy": float(E2_energy),

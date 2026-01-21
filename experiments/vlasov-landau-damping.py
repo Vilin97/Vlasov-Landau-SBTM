@@ -201,9 +201,9 @@ def main():
         else:
             entropy_production = 0.0
 
-        electric_energy = jnp.sum(E ** 2) * eta # electric energy
+        electric_energy = 0.5 * jnp.sum(E ** 2) * eta # electric energy
         momentum = jnp.mean(v, axis=0)
-        kinetic_energy = 0.5 * jnp.mean(jnp.sum(v ** 2, axis=1))
+        kinetic_energy = 0.5 * jnp.mean(jnp.sum(v ** 2, axis=1)) * L
         total_energy = kinetic_energy + electric_energy
         E_norm = jnp.sqrt(electric_energy)
 
