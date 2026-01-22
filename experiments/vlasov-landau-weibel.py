@@ -1,5 +1,5 @@
 # Weibel instability with CLI + wandb logging
-# python experiments/weibel_1d_dv.py --n 1000000 --M 100 --dt 0.1 --gpu 0 --dv 3 --final_time 125 --beta 1e-2 --c 0.3 --k 0.2 --alpha_B 1e-3 --seed 43 --wandb_run_name "weibel_n1e6_M100_dt0.1_beta1e-2_c0.3"
+# python experiments/vlasov-landau-weibel.py --n 100_000 --M 100 --dt 0.1 --dv 2 --C 0 --score_method blob --wandb_project weibel --wandb_run_name "n1e5_M100_dt0.1_dv2_C0_blob"
 
 import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -218,6 +218,7 @@ def parse_args():
     p.add_argument("--wandb_run_name", type=str, default="weibel")
     p.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
     p.add_argument("--log_every", type=int, default=1)
+    p.add_argument("--log_distance_every", type=int, default=10)
     p.add_argument("--num_snapshots", type=int, default=6)
     p.add_argument("--quiver_score_scale", type=float, default=500)
     p.add_argument("--quiver_flow_scale", type=float, default=1000)
@@ -435,31 +436,85 @@ def main():
 
         E_L2 = jnp.sqrt(jnp.sum(E1**2 + E2**2) * eta)
 
+        if (istep + 1) % args.log_distance_every == 0:
+            l2_dist_gaussian = utils.compute_l2_distance_to_gaussian(v, dv)
+        else:
+            l2_dist_gaussian = None
+
         if (istep + 1) % args.log_every == 0:
             elapsed = time.perf_counter() - start_time
             steps_per_sec = (istep + 1) / elapsed
-            wandb.log(
-                {
-                    "step": istep + 1,
-                    "time": float((istep + 1) * dt),
-                    "steps_per_sec": steps_per_sec,
-                    "E_L2": float(E_L2),
-                    "K1_energy": float(K1_energy),
-                    "K2_energy": float(K2_energy),
-                    "kinetic_energy": float(kinetic_energy),
-                    "E1_energy": float(E1_energy),
-                    "E2_energy": float(E2_energy),
-                    "electric_energy": float(electric_energy),
-                    "magnetic_energy": float(magnetic_energy),
-                    "total_energy": float(total_energy),
-                    "entropy_production": float(entropy_production),
-                },
-                step=istep + 1,
-            )
+            log_dict = {
+                "step": istep + 1,
+                "time": float((istep + 1) * dt),
+                "steps_per_sec": steps_per_sec,
+                "E_L2": float(E_L2),
+                "K1_energy": float(K1_energy),
+                "K2_energy": float(K2_energy),
+                "kinetic_energy": float(kinetic_energy),
+                "E1_energy": float(E1_energy),
+                "E2_energy": float(E2_energy),
+                "electric_energy": float(electric_energy),
+                "magnetic_energy": float(magnetic_energy),
+                "total_energy": float(total_energy),
+                "entropy_production": float(entropy_production),
+            }
+            if l2_dist_gaussian is not None:
+                log_dict["l2_dist_gaussian"] = l2_dist_gaussian
+            wandb.log(log_dict, step=istep + 1)
 
     fig_ps = plot_weibel(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt, C, score_method)
     wandb.log({"phase_space_snapshots": wandb.Image(fig_ps)}, step=final_steps + 1)
     plt.close(fig_ps)
+
+    # Generate all 4 density distribution plots
+    fig_v1v2_marginal = utils.plot_v1v2_marginal_snapshots(
+        v_traj, t_traj, bounds_v=[(-0.7, 0.7), (-0.7, 0.7)], bins_per_side=200
+    )
+    wandb.log({"v1v2_marginal_snapshots": wandb.Image(fig_v1v2_marginal)}, step=final_steps + 1)
+    plt.close(fig_v1v2_marginal)
+
+    fig_v1v2_spatial = utils.plot_v1v2_spatial_slice_snapshots(
+        x_traj, v_traj, t_traj,
+        bounds_v=[(-0.6, 0.6), (-0.6, 0.6)],
+        bounds_x=(0.0625 * math.pi - 0.1, 0.0625 * math.pi + 0.1),
+        bins_per_side=(1, 200, 200)
+    )
+    wandb.log({"v1v2_spatial_slice_snapshots": wandb.Image(fig_v1v2_spatial)}, step=final_steps + 1)
+    plt.close(fig_v1v2_spatial)
+
+    fig_v2_at_v1_zero = utils.plot_v2_at_v1_zero_evolution(
+        v_traj, t_traj, bounds_v=[(-0.01, 0.01), (-3.0, 3.0)], bins_per_side=(1, 400)
+    )
+    wandb.log({"v2_at_v1_zero_evolution": wandb.Image(fig_v2_at_v1_zero)}, step=final_steps + 1)
+    plt.close(fig_v2_at_v1_zero)
+
+    fig_v2_marginal = utils.plot_v2_marginal_evolution(
+        v_traj, t_traj, bounds_v=[(-3.0, 3.0)], bins_per_side=400
+    )
+    wandb.log({"v2_marginal_evolution": wandb.Image(fig_v2_marginal)}, step=final_steps + 1)
+    plt.close(fig_v2_marginal)
+
+    # Save trajectory data as wandb artifact
+    artifact = wandb.Artifact(
+        name=f"trajectories_{args.wandb_run_name}",
+        type="trajectory_data",
+        description=f"Position, velocity, and time trajectories for {args.num_snapshots} snapshots"
+    )
+
+    # Save as numpy arrays
+    traj_filename = f"trajectories_{args.wandb_run_name}.npz"
+    np.savez(
+        traj_filename,
+        x_traj=np.array(x_traj),
+        v_traj=np.array(v_traj),
+        t_traj=np.array(t_traj)
+    )
+    artifact.add_file(traj_filename)
+    wandb_run.log_artifact(artifact)
+
+    # Clean up the temporary file
+    os.remove(traj_filename)
 
     wandb_run.finish()
 

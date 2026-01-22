@@ -4,6 +4,7 @@ import jax.random as jr
 import jax.lax as lax
 from functools import partial
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import numpy as np
 import os
 import math
@@ -228,6 +229,197 @@ def plot_phase_space_snapshots(x_traj, v_traj, t_traj, L, title, outdir=None, fn
         path = None
 
     return fig, path
+
+#------------------------------------------------------------------------------
+# Reconstruct density from particles
+#------------------------------------------------------------------------------
+import jax
+import jax.numpy as jnp
+
+def make_grid_density_core(z, *, bounds, bins, smooth_sigma_bins=0.0):
+    """
+    z: (n,D) particles
+    bounds: (D,2)
+    bins: int or (D,)
+    Returns eval(z_query)->(m,)
+    """
+    z = jnp.asarray(z)
+    D = z.shape[1]
+    if not (1 <= D <= 3):
+        raise ValueError("D must be 1..3")
+
+    bounds = jnp.asarray(bounds)
+    bins = jnp.asarray([bins]*D) if jnp.ndim(bins)==0 else jnp.asarray(bins)
+    bins = bins.astype(jnp.int32)
+
+    lo, hi = bounds[:,0], bounds[:,1]
+    dx = (hi - lo) / bins
+
+    H, _ = jnp.histogramdd(
+        z,
+        bins=bins.tolist(),
+        range=[(float(lo[i]), float(hi[i])) for i in range(D)],
+    )
+    rho = H / (z.shape[0] * jnp.prod(dx))
+
+    # optional smoothing (separable Gaussian)
+    if smooth_sigma_bins and smooth_sigma_bins > 0:
+        def gauss1d(s):
+            r = int(jnp.ceil(3*s))
+            t = jnp.arange(-r, r+1)
+            k = jnp.exp(-0.5*(t/s)**2)
+            return k / jnp.sum(k)
+
+        k = gauss1d(float(smooth_sigma_bins))
+        pad = k.size // 2
+
+        def conv_axis(a, axis):
+            a = jnp.moveaxis(a, axis, -1)
+            a = jnp.pad(a, [(0,0)]*(a.ndim-1)+[(pad,pad)], mode="edge")
+            a2 = a.reshape(-1, a.shape[-1])
+            a2 = jax.vmap(lambda r: jnp.convolve(r, k, mode="valid"))(a2)
+            a = a2.reshape(*a.shape[:-1], -1)
+            return jnp.moveaxis(a, -1, axis)
+
+        for ax in range(D):
+            rho = conv_axis(rho, ax)
+
+    @jax.jit
+    def eval(zq):
+        zq = jnp.asarray(zq)
+        u = (zq - lo) / dx
+        u = jnp.clip(u, 0.0, bins - 1.000001)
+        i0 = jnp.floor(u).astype(jnp.int32)
+        t = u - i0
+
+        if D == 1:
+            i = i0[:,0]; w = t[:,0]
+            return (1-w)*rho[i] + w*rho[i+1]
+
+        if D == 2:
+            i,j = i0[:,0], i0[:,1]
+            tx,ty = t[:,0], t[:,1]
+            return (
+                (1-tx)*(1-ty)*rho[i,  j  ] +
+                 tx   *(1-ty)*rho[i+1,j  ] +
+                (1-tx)* ty   *rho[i,  j+1] +
+                 tx   * ty   *rho[i+1,j+1]
+            )
+
+        # D == 3
+        i,j,k = i0[:,0], i0[:,1], i0[:,2]
+        tx,ty,tz = t[:,0], t[:,1], t[:,2]
+        c00 = (1-tx)*rho[i,  j,  k  ] + tx*rho[i+1,j,  k  ]
+        c10 = (1-tx)*rho[i,  j+1,k  ] + tx*rho[i+1,j+1,k  ]
+        c01 = (1-tx)*rho[i,  j,  k+1] + tx*rho[i+1,j,  k+1]
+        c11 = (1-tx)*rho[i,  j+1,k+1] + tx*rho[i+1,j+1,k+1]
+        c0 = (1-ty)*c00 + ty*c10
+        c1 = (1-ty)*c01 + ty*c11
+        return (1-tz)*c0 + tz*c1
+
+    return eval
+
+def make_density_v(v, *, bounds_v, bins_v, smooth_sigma_bins=1.5):
+    return make_grid_density_core(
+        v,
+        bounds=bounds_v,
+        bins=bins_v,
+        smooth_sigma_bins=smooth_sigma_bins,
+    )
+
+def make_density_xv(x, v, *, bounds_x, bounds_v, bins_x, bins_v, smooth_sigma_bins=1.5):
+    z = jnp.concatenate([x[:,None], v], axis=1)
+    bounds = jnp.concatenate([jnp.asarray(bounds_x)[None,:], bounds_v], axis=0)
+    bins = jnp.concatenate([jnp.asarray([bins_x]), jnp.asarray(bins_v)])
+    core = make_grid_density_core(
+        z,
+        bounds=bounds,
+        bins=bins,
+        smooth_sigma_bins=smooth_sigma_bins,
+    )
+
+    def eval(vq, xq):
+        zq = jnp.concatenate([xq[:,None], vq], axis=1)
+        return core(zq)
+
+    return eval
+
+def density_on_regular_grid(
+    v, *, bounds_v, bins_per_side, x=None, bounds_x=None,
+    smooth_sigma_bins=0.0,
+):
+    """
+    Calculates the density on a regular grid based on the provided velocity and position data.
+    This function can evaluate the density either in velocity space or in both velocity and position spaces, depending on the input parameters.
+
+    v: Array of velocity data, shape (N, dv), where N is the number of samples and dv is the number of velocity dimensions.
+    bounds_v: Tuple or list specifying the bounds for each velocity dimension, shape (dv, 2).
+    bins_per_side: Number of bins per side for the grid. Can be:
+        - int: Same number of bins for all dimensions
+        - tuple/list: Specific number of bins for each dimension (dv,) for velocity-only or (1+dv,) when x is provided
+    x: Optional array of position data, shape (M, dx), where M is the number of samples and dx is the number of position dimensions.
+    bounds_x: Optional tuple or list specifying the bounds for each position dimension, shape (dx, 2). Required if x is provided.
+    smooth_sigma_bins: Standard deviation for Gaussian smoothing in bins, default is 0.0 (no smoothing).
+    return: A density array reshaped according to the number of bins and dimensions.
+    """
+    dv = v.shape[1]
+
+    # Convert bins_per_side to array
+    if isinstance(bins_per_side, (int, float)):
+        # Scalar: use same number of bins for all dimensions
+        if x is None:
+            bins = jnp.array([int(bins_per_side)] * dv)
+        else:
+            bins = jnp.array([int(bins_per_side)] * (1 + dv))
+    else:
+        # Tuple/list: use specified bins per dimension
+        bins = jnp.array([int(b) for b in bins_per_side])
+        expected_dims = dv if x is None else (1 + dv)
+        if len(bins) != expected_dims:
+            raise ValueError(
+                f"bins_per_side must have length {expected_dims} "
+                f"({'dv' if x is None else '1+dv'}), got {len(bins)}"
+            )
+
+    if x is None:
+        eval_fn = make_density_v(
+            v,
+            bounds_v=jnp.asarray(bounds_v),
+            bins_v=tuple(bins),
+            smooth_sigma_bins=smooth_sigma_bins,
+        )
+        bounds = jnp.asarray(bounds_v)
+    else:
+        if bounds_x is None:
+            raise ValueError("bounds_x required when x is provided.")
+        eval_fn = make_density_xv(
+            x, v,
+            bounds_x=jnp.asarray(bounds_x),
+            bounds_v=jnp.asarray(bounds_v),
+            bins_x=int(bins[0]),
+            bins_v=tuple(bins[1:]),
+            smooth_sigma_bins=smooth_sigma_bins,
+        )
+        bounds = jnp.concatenate(
+            [jnp.asarray(bounds_x)[None, :], jnp.asarray(bounds_v)],
+            axis=0,
+        )
+
+    D = bounds.shape[0]
+    lo, hi = bounds[:, 0], bounds[:, 1]
+    dx = (hi - lo) / bins
+
+    axes = [lo[d] + (jnp.arange(bins[d]) + 0.5) * dx[d] for d in range(D)]
+    mesh = jnp.meshgrid(*axes, indexing="ij")
+    pts = jnp.stack([m.reshape(-1) for m in mesh], axis=1)
+
+    if x is None:
+        rho = eval_fn(pts)
+        return rho.reshape(tuple(bins))
+    else:
+        rho = eval_fn(pts[:, 1:], pts[:, 0])
+        return rho.reshape(tuple(bins))
+
 
 #------------------------------------------------------------------------------
 # Rejection sampling
@@ -644,3 +836,310 @@ def train_score_model(model, optimizer, x, v, key, batch_size, num_batch_steps):
             start = end
             batch_count += 1
     return losses
+
+#------------------------------------------------------------------------------
+# Density visualization and analysis for Weibel experiment
+#------------------------------------------------------------------------------
+def compute_l2_distance_to_gaussian(v, dv, bounds_v=None, bins=200):
+    """
+    Computes L2 distance between velocity distribution and standard Gaussian.
+
+    Args:
+        v: Velocity samples (N, dv)
+        dv: Number of velocity dimensions
+        bounds_v: Bounds for each velocity dimension, defaults to [(-3, 3)] * dv
+        bins: Number of bins per dimension
+
+    Returns:
+        L2 distance (scalar)
+    """
+    if bounds_v is None:
+        bounds_v = [(-3.0, 3.0)] * dv
+
+    # Get density on regular grid
+    density = density_on_regular_grid(
+        v, bounds_v=bounds_v, bins_per_side=bins, smooth_sigma_bins=0.0
+    )
+
+    # Create coordinate grids
+    bounds_v = jnp.asarray(bounds_v)
+    lo, hi = bounds_v[:, 0], bounds_v[:, 1]
+    dx = (hi - lo) / bins
+
+    # Create meshgrid for all dimensions
+    axes = [lo[d] + (jnp.arange(bins) + 0.5) * dx[d] for d in range(dv)]
+    mesh = jnp.meshgrid(*axes, indexing="ij")
+
+    # Compute standard Gaussian: (2π)^(-dv/2) * exp(-0.5 * ||v||²)
+    v_squared = sum(m**2 for m in mesh)
+    gaussian = jnp.exp(-0.5 * v_squared) / ((2.0 * jnp.pi) ** (dv / 2.0))
+
+    # Compute grid cell volume
+    dx_volume = jnp.prod(dx)
+
+    # L2 distance
+    l2_dist = jnp.sqrt(jnp.sum((density - gaussian) ** 2) * dx_volume)
+
+    return float(l2_dist)
+
+
+def plot_v1v2_marginal_snapshots(v_traj, t_traj, bounds_v=None, bins_per_side=200, smooth_sigma_bins=0.0):
+    """
+    Creates multi-panel figure showing v1-v2 marginal distribution at multiple timesteps.
+
+    Args:
+        v_traj: List of velocity snapshots
+        t_traj: List of times
+        bounds_v: Velocity bounds, defaults to [(-0.7, 0.7), (-0.7, 0.7)]
+        bins_per_side: Number of bins per side
+        smooth_sigma_bins: Smoothing sigma in bins
+    Returns:
+        Figure object
+    """
+    if bounds_v is None:
+        bounds_v = [(-0.7, 0.7), (-0.7, 0.7)]
+
+    num_snaps = len(v_traj)
+    cols = min(3, num_snaps)
+    rows = int(np.ceil(num_snaps / cols))
+
+    fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows), sharex=True, sharey=True)
+    axs = np.array(axs).reshape(-1)
+
+    # Setup colormap
+    cmap = plt.cm.jet.copy()
+    cmap.set_bad(color="black")
+
+    # First pass: compute all densities and find global vmin/vmax
+    density_list = []
+    for v_snap in v_traj:
+        density_vals = density_on_regular_grid(
+            v_snap[:, :2], bounds_v=bounds_v, bins_per_side=bins_per_side, smooth_sigma_bins=smooth_sigma_bins
+        )
+        density_vals = np.where(np.asarray(density_vals) > 0, np.asarray(density_vals), np.nan)
+        density_list.append(density_vals)
+
+    # Compute global vmin/vmax using 1st and 99th percentiles
+    all_densities = np.concatenate([d.flatten() for d in density_list])
+    vmin = np.nanpercentile(all_densities, 1)
+    vmax = np.nanpercentile(all_densities, 99)
+
+    # Second pass: plot with consistent colormap
+    last_img = None
+    for i, (density_vals, t_snap) in enumerate(zip(density_list, t_traj)):
+        ax = axs[i]
+
+        # Plot with log scale
+        img = ax.imshow(
+            density_vals.T,
+            origin="lower",
+            extent=[bounds_v[0][0], bounds_v[0][1], bounds_v[1][0], bounds_v[1][1]],
+            aspect="auto",
+            cmap=cmap,
+            norm=LogNorm(vmin=vmin, vmax=vmax),
+        )
+        last_img = img
+
+        ax.set_title(f"t = {t_snap:.1f}")
+        ax.set_xlabel("v1")
+        ax.set_ylabel("v2")
+
+    # Hide unused subplots
+    for j in range(i + 1, len(axs)):
+        axs[j].axis("off")
+
+    # Add colorbar
+    if last_img is not None:
+        cbar = fig.colorbar(last_img, ax=axs.tolist(), orientation="vertical", fraction=0.02, pad=0.02)
+        cbar.set_label("Density")
+
+    plt.suptitle("V1-V2 Marginal Distribution")
+
+    return fig
+
+
+def plot_v1v2_spatial_slice_snapshots(x_traj, v_traj, t_traj, bounds_v=None, bounds_x=None, bins_per_side=None, smooth_sigma_bins=0.0):
+    """
+    Creates multi-panel figure showing v1-v2 distribution in a spatial slice.
+
+    Args:
+        x_traj: List of position snapshots
+        v_traj: List of velocity snapshots
+        t_traj: List of times
+        bounds_v: Velocity bounds, defaults to [(-0.7, 0.7), (-0.7, 0.7)]
+        bounds_x: Spatial bounds, defaults to auto-computed around median
+        bins_per_side: Bins per dimension, defaults to (1, 200, 200)
+        smooth_sigma_bins: Smoothing sigma in bins
+    Returns:
+        Figure object
+    """
+    if bounds_v is None:
+        bounds_v = [(-0.7, 0.7), (-0.7, 0.7)]
+    if bins_per_side is None:
+        bins_per_side = (1, 200, 200)
+
+    # Auto-compute bounds_x if not provided (centered around median with width 0.1)
+    if bounds_x is None:
+        x_first = np.asarray(x_traj[0])
+        x_median = float(np.median(x_first))
+        bounds_x = (x_median - 0.05, x_median + 0.05)
+
+    num_snaps = len(v_traj)
+    cols = min(3, num_snaps)
+    rows = int(np.ceil(num_snaps / cols))
+
+    fig, axs = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows), sharex=True, sharey=True)
+    axs = np.array(axs).reshape(-1)
+
+    # Setup colormap
+    cmap = plt.cm.jet.copy()
+    cmap.set_bad(color="black")
+
+    # First pass: compute all densities and find global vmin/vmax
+    density_2d_list = []
+    for x_snap, v_snap in zip(x_traj, v_traj):
+        density_vals = density_on_regular_grid(
+            v_snap[:, :2],
+            bounds_v=bounds_v,
+            bins_per_side=bins_per_side,
+            x=x_snap,
+            bounds_x=bounds_x,
+            smooth_sigma_bins=smooth_sigma_bins,
+        )
+        # Extract 2D slice (single x bin, 200x200 in v1-v2)
+        density_2d = density_vals[0, :, :]
+        density_2d = np.where(np.asarray(density_2d) > 0, np.asarray(density_2d), np.nan)
+        density_2d_list.append(density_2d)
+
+    # Compute global vmin/vmax using 1st and 99th percentiles
+    all_densities = np.concatenate([d.flatten() for d in density_2d_list])
+    vmin = np.nanpercentile(all_densities, 1)
+    vmax = np.nanpercentile(all_densities, 99)
+    
+    # Second pass: plot with consistent colormap
+    last_img = None
+    for i, (density_2d, t_snap) in enumerate(zip(density_2d_list, t_traj)):
+        ax = axs[i]
+
+        # Plot with log scale
+        img = ax.imshow(
+            density_2d.T,
+            origin="lower",
+            extent=[bounds_v[0][0], bounds_v[0][1], bounds_v[1][0], bounds_v[1][1]],
+            aspect="auto",
+            cmap=cmap,
+            norm=LogNorm(vmin=vmin, vmax=vmax),
+        )
+        last_img = img
+
+        ax.set_title(f"t = {t_snap:.1f}")
+        ax.set_xlabel("v1")
+        ax.set_ylabel("v2")
+
+    # Hide unused subplots
+    for j in range(i + 1, len(axs)):
+        axs[j].axis("off")
+
+    # Add colorbar
+    if last_img is not None:
+        cbar = fig.colorbar(last_img, ax=axs.tolist(), orientation="vertical", fraction=0.02, pad=0.02)
+        cbar.set_label("Density")
+
+    plt.suptitle(f"V1-V2 Spatial Slice (x ≈ {(bounds_x[0] + bounds_x[1]) / 2:.3f})")
+
+    return fig
+
+
+def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=None):
+    """
+    Creates line plot showing v2 distribution at v1≈0 for all timesteps.
+
+    Args:
+        v_traj: List of velocity snapshots
+        t_traj: List of times
+        bounds_v: Velocity bounds, defaults to [(-0.01, 0.01), (-3, 3)]
+        bins_per_side: Bins per dimension, defaults to (1, 200)
+
+    Returns:
+        Figure object
+    """
+    if bounds_v is None:
+        bounds_v = [(-0.01, 0.01), (-3.0, 3.0)]
+    if bins_per_side is None:
+        bins_per_side = (1, 200)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    # Plot each timestep
+    for v_snap, t_snap in zip(v_traj, t_traj):
+        # Get density on regular grid (use first 2 velocity components)
+        density_vals = density_on_regular_grid(
+            v_snap[:, :2], bounds_v=bounds_v, bins_per_side=bins_per_side, smooth_sigma_bins=0.0
+        )
+
+        # Extract 1D (single v1 bin, 200 v2 bins)
+        density_1d = density_vals[0, :]
+
+        # Create v2 grid
+        bounds_v_arr = np.asarray(bounds_v)
+        v2_grid = np.linspace(bounds_v_arr[1, 0], bounds_v_arr[1, 1], bins_per_side[1])
+
+        ax.plot(v2_grid, np.asarray(density_1d), label=f"t={t_snap:.1f}")
+
+    # Add steady state (standard Gaussian)
+    v2_grid = np.linspace(bounds_v[1][0], bounds_v[1][1], bins_per_side[1])
+    gaussian_steady = np.exp(-0.5 * v2_grid**2) / np.sqrt(2.0 * np.pi)
+    ax.plot(v2_grid, gaussian_steady, 'k--', label=r'$N(0,1)$')
+
+    ax.set_xlabel("v2")
+    ax.set_ylabel("Density")
+    ax.set_title("V2 Distribution at v1 ≈ 0")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    return fig
+
+
+def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200):
+    """
+    Creates line plot showing v2 marginal distribution for all timesteps.
+
+    Args:
+        v_traj: List of velocity snapshots
+        t_traj: List of times
+        bounds_v: Velocity bounds, defaults to [(-3, 3)]
+        bins_per_side: Number of bins
+
+    Returns:
+        Figure object
+    """
+    if bounds_v is None:
+        bounds_v = [(-3.0, 3.0)]
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    # Plot each timestep
+    for v_snap, t_snap in zip(v_traj, t_traj):
+        # Get density on regular grid (use v2 only, which is v[:, 1:2])
+        density_vals = density_on_regular_grid(
+            v_snap[:, 1:2], bounds_v=bounds_v, bins_per_side=bins_per_side, smooth_sigma_bins=0.0
+        )
+
+        # Create v2 grid
+        bounds_v_arr = np.asarray(bounds_v)
+        v2_grid = np.linspace(bounds_v_arr[0, 0], bounds_v_arr[0, 1], bins_per_side)
+
+        ax.plot(v2_grid, np.asarray(density_vals), label=f"t={t_snap:.1f}")
+
+    # Add steady state (standard Gaussian)
+    v2_grid = np.linspace(bounds_v[0][0], bounds_v[0][1], bins_per_side)
+    gaussian_steady = np.exp(-0.5 * v2_grid**2) / np.sqrt(2.0 * np.pi)
+    ax.plot(v2_grid, gaussian_steady, 'k--', label=r'$N(0,1)$')
+
+    ax.set_xlabel("v2")
+    ax.set_ylabel("Density")
+    ax.set_title("V2 Marginal Distribution")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    return fig

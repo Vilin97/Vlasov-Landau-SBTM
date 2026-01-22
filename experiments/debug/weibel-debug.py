@@ -53,7 +53,7 @@ dt = 0.1
 final_time = 125
 gpu = 0
 fp32 = False
-dv = 3
+dv = 2
 beta = 1e-2
 c = 0.3
 k = 1.0 / 5.0
@@ -126,6 +126,128 @@ E2 = jnp.zeros(M)
 # B3(0,x) = α sin(kx)
 B3 = alpha_B * jnp.sin(k * cells)
 
+#%%
+# plot the v1-v2 marginal
+bounds_v = [(-0.7, 0.7)] * 2
+bins_per_side = 200
+density_vals = utils.density_on_regular_grid(v[:, :2], bounds_v=bounds_v, bins_per_side=bins_per_side, x=None, bounds_x=None, smooth_sigma_bins=0.0)
+fig, ax = plt.subplots(figsize=(6, 5))
+
+H = density_vals
+H = np.where(H > 0, H, np.nan)
+
+cmap = plt.cm.jet.copy()
+cmap.set_bad(color="black")
+
+v1min, v1max = bounds_v[0][0], bounds_v[0][1]
+v2min, v2max = bounds_v[1][0], bounds_v[1][1]
+
+vmin = np.nanmin(H)
+vmax = np.nanmax(H)
+im = ax.imshow(
+    H.T,
+    origin="lower",
+    extent=[v1min, v1max, v2min, v2max],
+    aspect="auto",
+    cmap=cmap,
+    norm=LogNorm(vmin=vmin, vmax=vmax),
+)
+cbar = fig.colorbar(im, ax=ax)
+cbar.set_label("Density")
+ax.set_xlabel("v1")
+ax.set_ylabel("v2")
+ax.set_title(f"Initial velocity distribution (dv={dv})")
+plt.show()
+
+#%%
+# plot the v1-v2 slice at x~=π/16
+bounds_v = [(-0.7, 0.7)] * 2
+bounds_x = (0.0625*math.pi-0.05, 0.0625*math.pi+0.05)
+bins_per_side = (1, 200, 200)
+density_vals = utils.density_on_regular_grid(v[:, :2], bounds_v=bounds_v, bins_per_side=bins_per_side, x=x, bounds_x=bounds_x, smooth_sigma_bins=0.0)
+fig, ax = plt.subplots(figsize=(6, 5))
+
+H = density_vals
+H = np.where(H > 0, H, np.nan)
+
+cmap = plt.cm.jet.copy()
+cmap.set_bad(color="black")
+
+v1min, v1max = bounds_v[0][0], bounds_v[0][1]
+v2min, v2max = bounds_v[1][0], bounds_v[1][1]
+
+vmin = np.nanmin(H)
+vmax = np.nanmax(H)
+im = ax.imshow(
+    H.T,
+    origin="lower",
+    extent=[v1min, v1max, v2min, v2max],
+    aspect="auto",
+    cmap=cmap,
+    norm=LogNorm(vmin=vmin, vmax=vmax),
+)
+cbar = fig.colorbar(im, ax=ax)
+cbar.set_label("Density")
+ax.set_xlabel("v1")
+ax.set_ylabel("v2")
+ax.set_title(f"Initial velocity distribution (dv={dv})")
+plt.show()
+
+#%%
+# plot the v1~=0 slice of the v1-v2 marginal
+bounds_v = [(-0.01, 0.01), (-3, 3)]
+bins_per_side = (1, 200)
+density_vals = utils.density_on_regular_grid(v[:,:2], bounds_v=bounds_v, bins_per_side=bins_per_side, x=None, bounds_x=None, smooth_sigma_bins=0.0)
+
+v1_grid = np.linspace(bounds_v[0][0], bounds_v[0][1], bins_per_side[0])
+v2_grid = np.linspace(bounds_v[1][0], bounds_v[1][1], bins_per_side[1])
+
+# Extract density at v1=0 and plot as a line
+v1_idx = np.argmin(np.abs(v1_grid))
+
+# Extract the slice at v1=0
+density_at_v1_0 = density_vals[v1_idx, :]
+
+plt.figure(figsize=(8, 5))
+plt.plot(v2_grid, density_at_v1_0, linewidth=2)
+
+# Normalize the Gaussian
+gaussian_density = np.exp(-0.5 * v2_grid**2) / np.sqrt(2 * np.pi)
+
+plt.plot(v2_grid, gaussian_density, 'r--', linewidth=2, label='Standard Gaussian')
+plt.legend()
+
+plt.xlabel("v2")
+plt.ylabel("Density")
+plt.title(f"Initial velocity distribution at v1=0 (dv={dv})")
+plt.grid(True, alpha=0.3)
+plt.show()
+
+#%%
+# plot the v1 marginal
+bounds_v = [(-3, 3)]
+bins_per_side = 200
+density_vals = utils.density_on_regular_grid(v[:,1:2], bounds_v=bounds_v, bins_per_side=bins_per_side, x=None, bounds_x=None, smooth_sigma_bins=0.0)
+
+# Create v1 grid
+v1_grid = np.linspace(bounds_v[0][0], bounds_v[0][1], bins_per_side)
+
+plt.figure(figsize=(8, 5))
+plt.plot(v1_grid, density_vals, linewidth=2)
+# Plot standard Gaussian for comparison
+gaussian_density = np.exp(-0.5 * v1_grid**2) / np.sqrt(2 * np.pi)
+plt.plot(v1_grid, gaussian_density, 'r--', linewidth=2, label='Standard Gaussian')
+plt.legend()
+
+plt.xlabel("v1")
+plt.ylabel("Density")
+plt.title(f"Initial v1 marginal distribution (dv={dv})")
+plt.grid(True, alpha=0.3)
+plt.show()
+
+
+
+#%%
 # ---------- time loop ----------
 final_steps = int(final_time / dt)
 snapshot_times = np.linspace(0.0, final_time, 6)

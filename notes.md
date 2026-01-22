@@ -1,6 +1,6 @@
 # Notes
 - f64 precision is ~10 slower but a lot more accurate. Command: `jax.config.update("jax_enable_x64", True)` 
-- collision kernel and NN training dominate time stepping
+- collision kernel dominates time stepping
 - utilizing the fact that the kernel is compactly supported gives a huge speedup for the collision kernel computation
 - gaussian and rademacher divergence approximations are ~30% faster than exact methods and denoised. Rademacher is slightly more accurate than gaussian and denoised
 - backward pass takes ~3x longer than forward pass.
