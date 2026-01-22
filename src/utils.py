@@ -840,13 +840,15 @@ def train_score_model(model, optimizer, x, v, key, batch_size, num_batch_steps):
 #------------------------------------------------------------------------------
 # Density visualization and analysis for Weibel experiment
 #------------------------------------------------------------------------------
-def compute_l2_distance_to_gaussian(v, dv, bounds_v=None, bins=200):
+def compute_l2_distance_to_gaussian(v, dv, theta=1.0, bounds_v=None, bins=200):
     """
-    Computes L2 distance between velocity distribution and standard Gaussian.
+    Computes L2 distance between velocity distribution and Gaussian with variance theta.
 
     Args:
         v: Velocity samples (N, dv)
         dv: Number of velocity dimensions
+        theta: Variance of the target Gaussian (default 1.0 for standard Gaussian)
+               For Weibel: theta = (beta + c**2) / 2 if dv == 2, or beta/2 + c**2/3 if dv == 3
         bounds_v: Bounds for each velocity dimension, defaults to [(-3, 3)] * dv
         bins: Number of bins per dimension
 
@@ -870,9 +872,9 @@ def compute_l2_distance_to_gaussian(v, dv, bounds_v=None, bins=200):
     axes = [lo[d] + (jnp.arange(bins) + 0.5) * dx[d] for d in range(dv)]
     mesh = jnp.meshgrid(*axes, indexing="ij")
 
-    # Compute standard Gaussian: (2π)^(-dv/2) * exp(-0.5 * ||v||²)
+    # Compute Gaussian with variance theta: (2πθ)^(-dv/2) * exp(-||v||²/(2θ))
     v_squared = sum(m**2 for m in mesh)
-    gaussian = jnp.exp(-0.5 * v_squared) / ((2.0 * jnp.pi) ** (dv / 2.0))
+    gaussian = jnp.exp(-0.5 * v_squared / theta) / ((2.0 * jnp.pi * theta) ** (dv / 2.0))
 
     # Compute grid cell volume
     dx_volume = jnp.prod(dx)
@@ -1050,7 +1052,7 @@ def plot_v1v2_spatial_slice_snapshots(x_traj, v_traj, t_traj, bounds_v=None, bou
     return fig
 
 
-def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=None):
+def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=None, theta=1.0):
     """
     Creates line plot showing v2 distribution at v1≈0 for all timesteps.
 
@@ -1059,6 +1061,8 @@ def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=No
         t_traj: List of times
         bounds_v: Velocity bounds, defaults to [(-0.01, 0.01), (-3, 3)]
         bins_per_side: Bins per dimension, defaults to (1, 200)
+        theta: Variance of the steady-state Gaussian (default 1.0)
+               For Weibel: theta = (beta + c**2) / 2 if dv == 2, or beta/2 + c**2/3 if dv == 3
 
     Returns:
         Figure object
@@ -1086,10 +1090,10 @@ def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=No
 
         ax.plot(v2_grid, np.asarray(density_1d), label=f"t={t_snap:.1f}")
 
-    # Add steady state (standard Gaussian)
+    # Add steady state (Gaussian with variance theta)
     v2_grid = np.linspace(bounds_v[1][0], bounds_v[1][1], bins_per_side[1])
-    gaussian_steady = np.exp(-0.5 * v2_grid**2) / np.sqrt(2.0 * np.pi)
-    ax.plot(v2_grid, gaussian_steady, 'k--', label=r'$N(0,1)$')
+    gaussian_steady = np.exp(-0.5 * v2_grid**2 / theta) / np.sqrt(2.0 * np.pi * theta)
+    ax.plot(v2_grid, gaussian_steady, 'k--', label=fr'$N(0,{theta:.4f})$')
 
     ax.set_xlabel("v2")
     ax.set_ylabel("Density")
@@ -1100,7 +1104,7 @@ def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=No
     return fig
 
 
-def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200):
+def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200, theta=1.0):
     """
     Creates line plot showing v2 marginal distribution for all timesteps.
 
@@ -1109,6 +1113,8 @@ def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200)
         t_traj: List of times
         bounds_v: Velocity bounds, defaults to [(-3, 3)]
         bins_per_side: Number of bins
+        theta: Variance of the steady-state Gaussian (default 1.0)
+               For Weibel: theta = (beta + c**2) / 2 if dv == 2, or beta/2 + c**2/3 if dv == 3
 
     Returns:
         Figure object
@@ -1131,10 +1137,10 @@ def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200)
 
         ax.plot(v2_grid, np.asarray(density_vals), label=f"t={t_snap:.1f}")
 
-    # Add steady state (standard Gaussian)
+    # Add steady state (Gaussian with variance theta)
     v2_grid = np.linspace(bounds_v[0][0], bounds_v[0][1], bins_per_side)
-    gaussian_steady = np.exp(-0.5 * v2_grid**2) / np.sqrt(2.0 * np.pi)
-    ax.plot(v2_grid, gaussian_steady, 'k--', label=r'$N(0,1)$')
+    gaussian_steady = np.exp(-0.5 * v2_grid**2 / theta) / np.sqrt(2.0 * np.pi * theta)
+    ax.plot(v2_grid, gaussian_steady, 'k--', label=fr'$N(0,{theta:.4f})$')
 
     ax.set_xlabel("v2")
     ax.set_ylabel("Density")

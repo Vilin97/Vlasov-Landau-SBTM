@@ -212,9 +212,14 @@ plt.figure(figsize=(8, 5))
 plt.plot(v2_grid, density_at_v1_0, linewidth=2)
 
 # Normalize the Gaussian
-gaussian_density = np.exp(-0.5 * v2_grid**2) / np.sqrt(2 * np.pi)
+if dv == 2:
+    theta = (beta + c**2) / 2
+else:  # dv == 3
+    theta = beta / 2 + c**2 / 3
 
-plt.plot(v2_grid, gaussian_density, 'r--', linewidth=2, label='Standard Gaussian')
+gaussian_density = np.exp(-0.5 * v2_grid**2 / theta) / np.sqrt(2 * np.pi * theta)
+
+plt.plot(v2_grid, gaussian_density, 'r--', linewidth=2, label=f'N(0,{theta:.3f})')
 plt.legend()
 
 plt.xlabel("v2")
@@ -235,8 +240,12 @@ v1_grid = np.linspace(bounds_v[0][0], bounds_v[0][1], bins_per_side)
 plt.figure(figsize=(8, 5))
 plt.plot(v1_grid, density_vals, linewidth=2)
 # Plot standard Gaussian for comparison
-gaussian_density = np.exp(-0.5 * v1_grid**2) / np.sqrt(2 * np.pi)
-plt.plot(v1_grid, gaussian_density, 'r--', linewidth=2, label='Standard Gaussian')
+if dv == 2:
+    theta = (beta + c**2) / 2
+else:  # dv == 3
+    theta = beta / 2 + c**2 / 3
+gaussian_density = np.exp(-0.5 * v1_grid**2 / theta) / np.sqrt(2 * np.pi * theta)
+plt.plot(v1_grid, gaussian_density, 'r--', linewidth=2, label=f'N(0,{theta:.3f})')
 plt.legend()
 
 plt.xlabel("v1")

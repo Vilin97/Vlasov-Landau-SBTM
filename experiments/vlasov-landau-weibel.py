@@ -437,7 +437,11 @@ def main():
         E_L2 = jnp.sqrt(jnp.sum(E1**2 + E2**2) * eta)
 
         if (istep + 1) % args.log_distance_every == 0:
-            l2_dist_gaussian = utils.compute_l2_distance_to_gaussian(v, dv)
+            if dv == 2:
+                theta = (beta + c**2) / 2
+            else:  # dv == 3
+                theta = beta / 2 + c**2 / 3
+            l2_dist_gaussian = utils.compute_l2_distance_to_gaussian(v, dv, theta=theta)
         else:
             l2_dist_gaussian = None
 
@@ -483,14 +487,22 @@ def main():
     wandb.log({"v1v2_spatial_slice_snapshots": wandb.Image(fig_v1v2_spatial)}, step=final_steps + 1)
     plt.close(fig_v1v2_spatial)
 
+    # Compute steady-state variance theta
+    if dv == 2:
+        theta = (beta + c**2) / 2
+    elif dv == 3:
+        theta = beta / 2 + c**2 / 3
+    else:
+        raise ValueError(f"Unsupported dv: {dv}")
+
     fig_v2_at_v1_zero = utils.plot_v2_at_v1_zero_evolution(
-        v_traj, t_traj, bounds_v=[(-0.01, 0.01), (-3.0, 3.0)], bins_per_side=(1, 400)
+        v_traj, t_traj, bounds_v=[(-0.01, 0.01), (-3.0, 3.0)], bins_per_side=(1, 400), theta=theta
     )
     wandb.log({"v2_at_v1_zero_evolution": wandb.Image(fig_v2_at_v1_zero)}, step=final_steps + 1)
     plt.close(fig_v2_at_v1_zero)
 
     fig_v2_marginal = utils.plot_v2_marginal_evolution(
-        v_traj, t_traj, bounds_v=[(-3.0, 3.0)], bins_per_side=400
+        v_traj, t_traj, bounds_v=[(-3.0, 3.0)], bins_per_side=400, theta=theta
     )
     wandb.log({"v2_marginal_evolution": wandb.Image(fig_v2_marginal)}, step=final_steps + 1)
     plt.close(fig_v2_marginal)
