@@ -885,7 +885,7 @@ def compute_l2_distance_to_gaussian(v, dv, theta=1.0, bounds_v=None, bins=200):
     return float(l2_dist)
 
 
-def plot_v1v2_marginal_snapshots(v_traj, t_traj, bounds_v=None, bins_per_side=200, smooth_sigma_bins=0.0):
+def plot_v1v2_marginal_snapshots(v_traj, t_traj, bounds_v=None, bins_per_side=200, smooth_sigma_bins=0.0, title=None):
     """
     Creates multi-panel figure showing v1-v2 marginal distribution at multiple timesteps.
 
@@ -895,6 +895,7 @@ def plot_v1v2_marginal_snapshots(v_traj, t_traj, bounds_v=None, bins_per_side=20
         bounds_v: Velocity bounds, defaults to [(-0.7, 0.7), (-0.7, 0.7)]
         bins_per_side: Number of bins per side
         smooth_sigma_bins: Smoothing sigma in bins
+        title: Optional title for the figure
     Returns:
         Figure object
     """
@@ -955,12 +956,12 @@ def plot_v1v2_marginal_snapshots(v_traj, t_traj, bounds_v=None, bins_per_side=20
         cbar = fig.colorbar(last_img, ax=axs.tolist(), orientation="vertical", fraction=0.02, pad=0.02)
         cbar.set_label("Density")
 
-    plt.suptitle("V1-V2 Marginal Distribution")
+    plt.suptitle(title if title else "V1-V2 Marginal Distribution")
 
     return fig
 
 
-def plot_v1v2_spatial_slice_snapshots(x_traj, v_traj, t_traj, bounds_v=None, bounds_x=None, bins_per_side=None, smooth_sigma_bins=0.0):
+def plot_v1v2_spatial_slice_snapshots(x_traj, v_traj, t_traj, bounds_v=None, bounds_x=None, bins_per_side=None, smooth_sigma_bins=0.0, title=None):
     """
     Creates multi-panel figure showing v1-v2 distribution in a spatial slice.
 
@@ -972,6 +973,7 @@ def plot_v1v2_spatial_slice_snapshots(x_traj, v_traj, t_traj, bounds_v=None, bou
         bounds_x: Spatial bounds, defaults to auto-computed around median
         bins_per_side: Bins per dimension, defaults to (1, 200, 200)
         smooth_sigma_bins: Smoothing sigma in bins
+        title: Optional title for the figure
     Returns:
         Figure object
     """
@@ -1047,12 +1049,13 @@ def plot_v1v2_spatial_slice_snapshots(x_traj, v_traj, t_traj, bounds_v=None, bou
         cbar = fig.colorbar(last_img, ax=axs.tolist(), orientation="vertical", fraction=0.02, pad=0.02)
         cbar.set_label("Density")
 
-    plt.suptitle(f"V1-V2 Spatial Slice (x ≈ {(bounds_x[0] + bounds_x[1]) / 2:.3f})")
+    default_title = f"V1-V2 Spatial Slice (x ≈ {(bounds_x[0] + bounds_x[1]) / 2:.3f})"
+    plt.suptitle(title if title else default_title)
 
     return fig
 
 
-def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=None, theta=1.0):
+def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=None, theta=1.0, logy=False, title=None):
     """
     Creates line plot showing v2 distribution at v1≈0 for all timesteps.
 
@@ -1063,6 +1066,8 @@ def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=No
         bins_per_side: Bins per dimension, defaults to (1, 200)
         theta: Variance of the steady-state Gaussian (default 1.0)
                For Weibel: theta = (beta + c**2) / 2 if dv == 2, or beta/2 + c**2/3 if dv == 3
+        logy: If True, use logarithmic y-axis (default False)
+        title: Optional title for the figure
 
     Returns:
         Figure object
@@ -1090,21 +1095,24 @@ def plot_v2_at_v1_zero_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=No
 
         ax.plot(v2_grid, np.asarray(density_1d), label=f"t={t_snap:.1f}")
 
-    # Add steady state (Gaussian with variance theta)
+    # Add steady state (2D Gaussian evaluated at v1=0)
+    # f(v1=0, v2) = exp(-v2^2/(2*theta)) / (2*pi*theta)
     v2_grid = np.linspace(bounds_v[1][0], bounds_v[1][1], bins_per_side[1])
-    gaussian_steady = np.exp(-0.5 * v2_grid**2 / theta) / np.sqrt(2.0 * np.pi * theta)
+    gaussian_steady = np.exp(-0.5 * v2_grid**2 / theta) / (2.0 * np.pi * theta)
     ax.plot(v2_grid, gaussian_steady, 'k--', label=fr'$N(0,{theta:.4f})$')
 
     ax.set_xlabel("v2")
     ax.set_ylabel("Density")
-    ax.set_title("V2 Distribution at v1 ≈ 0")
+    if logy:
+        ax.set_yscale('log')
+    ax.set_title(title if title else "V2 Distribution at v1 ≈ 0")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
     return fig
 
 
-def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200, theta=1.0):
+def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200, theta=1.0, title=None, logy=False):
     """
     Creates line plot showing v2 marginal distribution for all timesteps.
 
@@ -1115,6 +1123,8 @@ def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200,
         bins_per_side: Number of bins
         theta: Variance of the steady-state Gaussian (default 1.0)
                For Weibel: theta = (beta + c**2) / 2 if dv == 2, or beta/2 + c**2/3 if dv == 3
+        title: Optional title for the figure
+        logy: If True, use logarithmic y-axis (default False)
 
     Returns:
         Figure object
@@ -1144,7 +1154,9 @@ def plot_v2_marginal_evolution(v_traj, t_traj, bounds_v=None, bins_per_side=200,
 
     ax.set_xlabel("v2")
     ax.set_ylabel("Density")
-    ax.set_title("V2 Marginal Distribution")
+    if logy:
+        ax.set_yscale('log')
+    ax.set_title(title if title else "V2 Marginal Distribution")
     ax.legend()
     ax.grid(True, alpha=0.3)
 

@@ -9,7 +9,7 @@ from src import utils
 
 # Configuration
 PROJECT_NAME = "weibel"
-NUM_EXPERIMENTS = 10
+NUM_EXPERIMENTS = 20
 
 # Initialize wandb API
 api = wandb.Api()
@@ -135,8 +135,8 @@ import wandb
 api = wandb.Api()
 
 # Specific run
-# run_id = "fgtgnhyt"
-run_id = "5i4h538e"
+# run_id = "fgtgnhyt" # blob
+run_id = "5i4h538e" # sbtm
 run = api.run(f"weibel/{run_id}")
 
 config = run.config
@@ -185,6 +185,53 @@ for t, v_snap in zip(t_traj, v_traj):
     else:
         mean_var = (var_v1 + var_v2) / 2
         print(f"{t:8.1f} | {var_v1:12.6f} | {var_v2:12.6f} | {'N/A':>12} | {mean_var:12.6f} | {theta:12.6f} | {mean_var - theta:+12.6f}")
+
+#%%
+# plot the v1=0 slice of v1-v2 marginal, and also the v1-v2 marginal itself.
+import matplotlib.pyplot as plt
+from src import utils
+# Reimport utils to ensure latest version is loaded
+import importlib
+importlib.reload(utils)
+
+lim = 0.8
+
+# 1. Plot v1-v2 marginal distribution
+fig_v1v2 = utils.plot_v1v2_marginal_snapshots(
+    list(v_traj), list(t_traj),
+    bounds_v=[(-lim, lim), (-lim, lim)],
+    bins_per_side=200,
+    title=run.name
+)
+plt.show()
+
+# 2. Plot v2 at v1≈0 slice
+fig_v2_slice = utils.plot_v2_at_v1_zero_evolution(
+    list(v_traj), list(t_traj),
+    bounds_v=[(-0.05, 0.05), (-lim, lim)],
+    bins_per_side=(1, 200),
+    theta=theta,
+    logy=True,
+    title=run.name
+)
+plt.show()
+
+# 3. Plot v2 marginal distribution
+fig_v2_marginal = utils.plot_v2_marginal_evolution(
+    list(v_traj), list(t_traj),
+    bounds_v=[(-lim, lim)],
+    bins_per_side=200,
+    theta=theta,
+    title=run.name,
+    logy=True
+)
+plt.show()
+
+# 4. Compute L2 distance of v2 marginal to Gaussian
+print(f"L2 distance of v2 marginal to N(0, {theta:.6f}):")
+for v_snap, t_snap in zip(v_traj, t_traj):
+    l2_dist = utils.compute_l2_distance_to_gaussian(v_snap[:, 1:2], dv=1, theta=theta, bounds_v=[(-lim, lim)], bins=200)
+    print(f"  t={t_snap:.1f}: L2 = {l2_dist:.6f}")
 
 # %%
 # Debug: Compare actual distribution to Gaussian with variance theta
@@ -445,6 +492,8 @@ for i, label in enumerate(['v1', 'v2', 'v3'][:dv]):
 # 4. Skewness: should be 0 for Gaussian
 
 from scipy.stats import kurtosis, skew
+import importlib
+from src import utils
 
 print("=" * 60)
 print("BETTER CONVERGENCE METRICS")

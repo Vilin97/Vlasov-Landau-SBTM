@@ -441,7 +441,8 @@ def main():
                 theta = (beta + c**2) / 2
             else:  # dv == 3
                 theta = beta / 2 + c**2 / 3
-            l2_dist_gaussian = utils.compute_l2_distance_to_gaussian(v, dv, theta=theta)
+            # Compute L2 distance of v2 marginal to 1D Gaussian
+            l2_dist_gaussian = utils.compute_l2_distance_to_gaussian(v[:, 1:2], dv=1, theta=theta, bounds_v=[(-0.8, 0.8)], bins=200)
         else:
             l2_dist_gaussian = None
 
@@ -464,7 +465,7 @@ def main():
                 "entropy_production": float(entropy_production),
             }
             if l2_dist_gaussian is not None:
-                log_dict["l2_dist_gaussian"] = l2_dist_gaussian
+                log_dict["l2_dist_gaussian_v2"] = l2_dist_gaussian
             wandb.log(log_dict, step=istep + 1)
 
     fig_ps = plot_weibel(x_traj, v_traj, t_traj, dv, beta, c, k, alpha_B, n, M, dt, C, score_method)
@@ -496,16 +497,28 @@ def main():
         raise ValueError(f"Unsupported dv: {dv}")
 
     fig_v2_at_v1_zero = utils.plot_v2_at_v1_zero_evolution(
-        v_traj, t_traj, bounds_v=[(-0.01, 0.01), (-3.0, 3.0)], bins_per_side=(1, 400), theta=theta
+        v_traj, t_traj, bounds_v=[(-0.01, 0.01), (-0.8, 0.8)], bins_per_side=(1, 400), theta=theta
     )
     wandb.log({"v2_at_v1_zero_evolution": wandb.Image(fig_v2_at_v1_zero)}, step=final_steps + 1)
     plt.close(fig_v2_at_v1_zero)
 
+    fig_v2_at_v1_zero_log = utils.plot_v2_at_v1_zero_evolution(
+        v_traj, t_traj, bounds_v=[(-0.01, 0.01), (-0.8, 0.8)], bins_per_side=(1, 400), theta=theta, logy=True
+    )
+    wandb.log({"v2_at_v1_zero_evolution_log": wandb.Image(fig_v2_at_v1_zero_log)}, step=final_steps + 1)
+    plt.close(fig_v2_at_v1_zero_log)
+
     fig_v2_marginal = utils.plot_v2_marginal_evolution(
-        v_traj, t_traj, bounds_v=[(-3.0, 3.0)], bins_per_side=400, theta=theta
+        v_traj, t_traj, bounds_v=[(-0.8, 0.8)], bins_per_side=400, theta=theta
     )
     wandb.log({"v2_marginal_evolution": wandb.Image(fig_v2_marginal)}, step=final_steps + 1)
     plt.close(fig_v2_marginal)
+
+    fig_v2_marginal_log = utils.plot_v2_marginal_evolution(
+        v_traj, t_traj, bounds_v=[(-0.8, 0.8)], bins_per_side=400, theta=theta, logy=True
+    )
+    wandb.log({"v2_marginal_evolution_log": wandb.Image(fig_v2_marginal_log)}, step=final_steps + 1)
+    plt.close(fig_v2_marginal_log)
 
     # Save trajectory data as wandb artifact
     artifact = wandb.Artifact(
