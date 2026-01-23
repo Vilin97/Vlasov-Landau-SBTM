@@ -25,6 +25,7 @@ runs_list = list(runs)[:NUM_RUNS_TO_BACKFILL]
 
 print(f"Found {len(runs_list)} runs to backfill")
 
+step = 1300
 for run in runs_list:
     print(f"\n{'='*60}")
     print(f"Processing run: {run.name} (id: {run.id})")
@@ -114,7 +115,7 @@ for run in runs_list:
                 logy=True,
                 title=run.name
             )
-            resumed_run.summary["v2_at_v1_zero_evolution_log"] = wandb.Image(fig_v2_at_v1_zero_log)
+            wandb.log({"v2_at_v1_zero_evolution_log": wandb.Image(fig_v2_at_v1_zero_log)}, step=step)
             plt.close(fig_v2_at_v1_zero_log)
             print(f"  Saved: v2_at_v1_zero_evolution_log")
 
@@ -127,7 +128,7 @@ for run in runs_list:
                 logy=True,
                 title=run.name
             )
-            resumed_run.summary["v2_marginal_evolution_log"] = wandb.Image(fig_v2_marginal_log)
+            wandb.log({"v2_marginal_evolution_log": wandb.Image(fig_v2_marginal_log)}, step=step)
             plt.close(fig_v2_marginal_log)
             print(f"  Saved: v2_marginal_evolution_log")
 
@@ -140,9 +141,9 @@ for run in runs_list:
                 logy=False,
                 title=run.name
             )
-            resumed_run.summary["v2_at_v1_zero_evolution_corrected"] = wandb.Image(fig_v2_at_v1_zero)
+            wandb.log({"v2_at_v1_zero_evolution": wandb.Image(fig_v2_at_v1_zero)}, step=step)
             plt.close(fig_v2_at_v1_zero)
-            print(f"  Saved: v2_at_v1_zero_evolution_corrected")
+            print(f"  Saved: v2_at_v1_zero_evolution")
 
             fig_v2_marginal = utils.plot_v2_marginal_evolution(
                 list(v_traj), list(t_traj),
@@ -152,9 +153,9 @@ for run in runs_list:
                 logy=False,
                 title=run.name
             )
-            resumed_run.summary["v2_marginal_evolution_corrected"] = wandb.Image(fig_v2_marginal)
+            wandb.log({"v2_marginal_evolution": wandb.Image(fig_v2_marginal)}, step=step)
             plt.close(fig_v2_marginal)
-            print(f"  Saved: v2_marginal_evolution_corrected")
+            print(f"  Saved: v2_marginal_evolution")
 
         print(f"  Successfully backfilled run: {run.name}")
 
