@@ -3,13 +3,13 @@
 #SBATCH --account=naske
 #SBATCH --gres=gpu:1
 #SBATCH --mem=200G
-#SBATCH --time=4:00:00
-#SBATCH --array=0-15
+#SBATCH --time=6:00:00
+#SBATCH --array=0-2
 #SBATCH --output=logs/%x_%N_%A_%a.out
 
-DV_VALUES=(2 3)                 # 2
-SCORE_METHODS=(sbtm blob)       # 2
-C_VALUES=(0 0.01 0.05 0.1)      # 4
+DV_VALUES=(3)                 # 2
+SCORE_METHODS=(blob)       # 2
+C_VALUES=(0.01 0.05 0.1)      # 4
 N_VALUES=(1000000)             # 1
 
 M=100
