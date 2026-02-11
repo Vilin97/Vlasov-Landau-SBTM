@@ -46,6 +46,10 @@ def parse_args():
     p.add_argument("--sbtm_lr", type=float, default=2e-4)
     p.add_argument("--sbtm_num_batch_steps", type=int, default=100)
 
+    p.add_argument("--score_quiver_scale", type=float, default=1.0, help="Scale for score quiver plots")
+    p.add_argument("--flow_quiver_scale", type=float, default=0.1, help="Scale for flow quiver plots")
+    p.add_argument("--mse_every", type=int, default=20, help="Compute and log score/flow MSE every k steps")
+
     p.add_argument("--wandb_project", type=str, default="vlasov_landau_damping", help="wandb project name")
     p.add_argument("--wandb_run_name", type=str, default="landau_damping", help="wandb run name")
     p.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline", "disabled"])
@@ -166,10 +170,18 @@ def main():
         s_plot = score_fn(x, v, cells, eta)
     s_true = -v
 
-    fig_quiver = utils.plot_score_quiver(v, s_plot, s_true, label=score_method)
+    fig_quiver = utils.plot_score_quiver(v, s_plot, s_true, label=score_method, scale=args.score_quiver_scale)
     wandb.log({"score_quiver": wandb.Image(fig_quiver)}, step=0)
     plt.show()
     plt.close(fig_quiver)
+
+    Q0_pred = utils.collision(x, v, s_plot, eta, gamma, L, w)
+    Q0_true = utils.collision(x, v, s_true, eta, gamma, L, w)
+
+    fig_flow0 = utils.plot_U_quiver_pred(v, -Q0_pred, label=f"{score_method}, t=0.0", U_true=-Q0_true, scale=args.flow_quiver_scale)
+    wandb.log({"flow_quiver": wandb.Image(fig_flow0)}, step=0)
+    plt.show()
+    plt.close(fig_flow0)
 
     # Main time loop with steps/sec logging
     snapshot_times = np.linspace(0.0, final_time, 6)
@@ -196,10 +208,15 @@ def main():
             else:
                 s = score_fn(x, v, cells, eta)
             Q = utils.collision(x, v, s, eta, gamma, L, w)
+            score_mse = float(jnp.mean(jnp.sum((s - (-v)) ** 2, axis=1)))
+            if (istep + 1) % args.mse_every == 0:
+                Q_gaussian = utils.collision(x, v, -v, eta, gamma, L, w)
+                flow_mse = float(jnp.mean(jnp.sum((Q - Q_gaussian) ** 2, axis=1)))
             v = v - dt * C * Q
             entropy_production = jnp.mean(jnp.sum(s * C * Q, axis=1))
         else:
             entropy_production = 0.0
+            score_mse = 0.0
 
         electric_energy = 0.5 * jnp.sum(E ** 2) * eta # electric energy
         momentum = jnp.mean(v, axis=0)
@@ -212,18 +229,22 @@ def main():
             elapsed = time.perf_counter() - start_time
             steps_per_sec = (istep + 1) / elapsed
             mom_dict = {f"momentum/{i+1}": float(m) for i, m in enumerate(momentum)}
+            log_dict = {
+                "step": istep + 1,
+                "time": float((istep + 1) * dt),
+                "steps_per_sec": steps_per_sec,
+                "E_L2": float(E_norm),
+                "electric_energy": float(electric_energy),
+                "kinetic_energy": float(kinetic_energy),
+                "total_energy": float(total_energy),
+                "entropy_production": float(entropy_production),
+                "score_mse": score_mse,
+                **mom_dict,
+            }
+            if C > 0 and (istep + 1) % args.mse_every == 0:
+                log_dict["flow_mse"] = flow_mse
             wandb.log(
-                {
-                    "step": istep + 1,
-                    "time": float((istep + 1) * dt),
-                    "steps_per_sec": steps_per_sec,
-                    "E_L2": float(E_norm),
-                    "electric_energy": float(electric_energy),
-                    "kinetic_energy": float(kinetic_energy),
-                    "total_energy": float(total_energy),
-                    "entropy_production": float(entropy_production),
-                    **mom_dict,
-                },
+                log_dict,
                 step=istep + 1,
             )
         
@@ -242,12 +263,12 @@ def main():
             Q = utils.collision(x, v, s, eta, gamma, L, w)
 
             fig_quiver_score_snap = utils.plot_score_quiver_pred(
-                v, s, label=f"{score_method}, t={istep * dt:.2f}"
+                v, s, label=f"{score_method}, t={istep * dt:.2f}", scale=args.score_quiver_scale
             )
             wandb.log({"score_quiver": wandb.Image(fig_quiver_score_snap)}, step=istep+1)
             plt.close(fig_quiver_score_snap)
             
-            fig_quiver_flow_snap = utils.plot_U_quiver_pred(v, -Q, label=f"{score_method}, t={istep * dt:.2f}")
+            fig_quiver_flow_snap = utils.plot_U_quiver_pred(v, -Q, label=f"{score_method}, t={istep * dt:.2f}", scale=args.flow_quiver_scale)
             wandb.log({"flow_quiver": wandb.Image(fig_quiver_flow_snap)}, step=istep+1)
             plt.close(fig_quiver_flow_snap)
 
