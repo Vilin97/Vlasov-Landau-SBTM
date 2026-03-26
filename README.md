@@ -49,7 +49,7 @@ Results are logged to [Weights & Biases](https://wandb.ai). Set `--wandb_project
 ## Citation
 
 ```bibtex
-@article{ilin2025sbtm,
+@article{ilin2026sbtm,
   title={A Neural Score-Based Particle Method for the Vlasov-Maxwell-Landau System},
   author={Ilin, Vasily and Hu, Jingwei},
   year={2026}
