@@ -1,6 +1,14 @@
 # Vlasov-Landau-SBTM
 
+[![arXiv](https://img.shields.io/badge/arXiv-2603.25832-b31b1b.svg)](https://arxiv.org/abs/2603.25832)
+
 A neural score-based particle method for the Vlasov-Maxwell-Landau system. We replace the $O(n^2)$-memory blob (KDE) score estimator in the deterministic particle method of [Bailo et al. (2024)](https://arxiv.org/abs/2404.11841) with score-based transport modeling (SBTM), where a neural network is trained on-the-fly via implicit score matching at $O(n)$ cost.
+
+<p align="center">
+  <img src="assets/weibel_sbtm.png" alt="Weibel instability: SBTM phase space snapshots" width="700">
+  <br>
+  <em>Weibel instability (3D velocity): SBTM thermalizes correctly to Maxwellian equilibrium.</em>
+</p>
 
 ## Setup
 
@@ -49,9 +57,13 @@ Results are logged to [Weights & Biases](https://wandb.ai). Set `--wandb_project
 ## Citation
 
 ```bibtex
-@article{ilin2026sbtm,
-  title={A Neural Score-Based Particle Method for the Vlasov-Maxwell-Landau System},
+@article{ilin2026neural,
+  title={A Neural Score-Based Particle Method for the {V}lasov-{M}axwell-{L}andau System},
   author={Ilin, Vasily and Hu, Jingwei},
-  year={2026}
+  journal={ICLR 2026 Workshop on AI and PDEs},
+  year={2026},
+  eprint={2603.25832},
+  archivePrefix={arXiv},
+  primaryClass={math.NA}
 }
 ```
