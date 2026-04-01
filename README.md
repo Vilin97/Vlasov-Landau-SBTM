@@ -2,7 +2,13 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2603.25832-b31b1b.svg)](https://arxiv.org/abs/2603.25832)
 
-A neural score-based particle method for the Vlasov-Maxwell-Landau system. We replace the $O(n^2)$-memory blob (KDE) score estimator in the deterministic particle method of [Bailo et al. (2024)](https://arxiv.org/abs/2404.11841) with score-based transport modeling (SBTM), where a neural network is trained on-the-fly via implicit score matching at $O(n)$ cost.
+Nuclear fusion promises nearly unlimited clean energy, but in order to get there we need to control a very hot gas called plasma. To do that, we need accurate simulation methods, which respect the physics: conservation of mass, momentum and total energy, and increase of entropy. We use a neural network as a subcomponent of the simulation to speed up the algorithm and make it more accurate, while respecting the physical laws.
+
+While trying to compare the new numerical method to the previous SotA, we encountered a problem -- so little is known about the properties of the system we are simulating that we can barely tell which method is better. But looking at the experimental data, we formed a conjecture: the steady-state must be Gaussian. We asked #Gemini DeepThink, and after a few iterations we had a detailed proof, which we confirmed by hand. But then I went further and autoformalized the proof in #Lean4.
+
+Considering that Claude wrote most of the code, this work represents the full cycle of semi-autonomous mathematical research: an AI wrote code to generate data, a human made a conjecture by looking at the data, another AI proved the conjecture, and a third AI formalized the proof in Lean.
+
+Related papers: [math paper](https://arxiv.org/abs/2505.10037), [formalization paper](https://arxiv.org/abs/2504.15509)
 
 <p align="center">
   <img src="assets/weibel_sbtm.png" alt="Weibel instability: SBTM phase space snapshots" width="700">
